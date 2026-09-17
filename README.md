@@ -199,7 +199,14 @@ sum by (event) (count_over_time({app="consumer"} | json [5m]))
   | `JobsNotCompleting` | 13:11:38 | 5m11s |
 
   Each delay is the rule's `for:`, plus scrape and evaluation intervals, Alertmanager's `group_wait`, and (for the backlog alert) about 50s for the backlog to pass 10 at 0.2 Jobs/s.
-- **Not yet verified:** the other alerts have not been seen firing yet: `JobFailureRatioHigh` (`just chaos-bad-image`), `SandboxProvisioningSlow`, `SandboxQuotaNearlyExhausted`, `ProducerDown` and `RedisDown`.
+  Recovery: after `just chaos-reset` (13:11:40), `ConsumersDown` resolved at 13:12:23 and `JobBacklogGrowing` at 13:13:53.
+- **Recovery surge caused failures (found by `JobFailureRatioHigh`):**
+  - When the Consumers came back they drained the backlog of about 70 Jobs as fast as they could. That burst of sandboxes hit the **50-pod sandbox ResourceQuota**.
+  - **38 Jobs failed** with `403 exceeded quota` between 13:12 and 13:13. `JobFailureRatioHigh` went pending at 13:12:58 (ratio about 48%) and was received at 13:15:08.
+  - The alert did its job. The root cause is that the Consumer treats "quota full" as a permanent failure instead of backing off, so a Consumer outage turns into a wave of failed Jobs on recovery.
+  - Fix, not done yet: leave the Job unacked (or requeue it with backoff) on a quota 403.
+- **Scenario 2** (`just chaos-bad-image` at 13:14:03): Jobs failed as expected (`not ready after 20.0s: phase=Pending waiting=ImagePullBackOff`). Its effect on the alert overlapped with the recovery surge above, so this scenario has **not** been shown to trigger an alert on its own.
+- **Not yet seen firing:** `SandboxProvisioningSlow`, `SandboxQuotaNearlyExhausted`, `ProducerDown`, `RedisDown`.
 
 ### Shortcuts & tradeoffs
 
