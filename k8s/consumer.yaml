@@ -22,11 +22,22 @@ spec:
           track: stable
       maxSurge: 1
       maxUnavailable: 0
+      # Automated cutover: each step must pass the metric-based health gate
+      # (k8s/analysis.yaml). No manual pauses; `just promote-full` / `just abort` override.
       steps:
         - setWeight: 25 # 1 of 4 consumers runs the new version
-        - pause: {} # manual gate: inspect dashboard, then `just promote` or `just abort`
+        - analysis: &canary-health
+            templates:
+              - templateName: consumer-canary-health
+            args:
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+              - name: stable-hash
+                valueFrom:
+                  podTemplateHashValue: Stable
         - setWeight: 50
-        - pause: {}
+        - analysis: *canary-health
   selector:
     matchLabels:
       app.kubernetes.io/name: consumer

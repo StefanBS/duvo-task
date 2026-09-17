@@ -296,3 +296,67 @@ just rollouts-ui   # Argo Rollouts dashboard on http://localhost:3100
 | `just deploy` gives each build a new version | Every deploy starts a canary, even when the Consumer code didn't change | Tag by content hash so unchanged code isn't released again |
 | Argo Rollouts controller runs as 1 replica; dashboard can make changes | If the controller is down, rollouts don't progress; anyone with port-forward access can promote/abort | HA controller with leader election; a read-only dashboard behind SSO |
 | Converting the Consumer deletes the old Deployment right after applying the Rollout | Both run together for a moment (no drop in capacity), then the old Pods stop gracefully | Rollout `workloadRef` for a zero-surprise migration |
+
+## Step 5 — Metric-based automated cutover
+
+```
+setWeight 25 ──▶ AnalysisRun ──pass──▶ setWeight 50 ──▶ AnalysisRun ──pass──▶ 100% (canary becomes stable)
+                     │                                       │
+                     ├─fail─────────▶ abort: canary scaled down, stable takes all Jobs, RolloutAborted
+                     └─inconclusive─▶ pause for a human (RolloutPaused after 2m)
+```
+
+The manual pauses from step 4 are replaced by **analysis steps** (`k8s/analysis.yaml`, [ADR 0004](docs/adr/0004-cutover-gated-on-relative-failure-ratio.md)):
+- Each step runs the `consumer-canary-health` AnalysisTemplate against Prometheus: an initial delay of 30s, then 3 measurements 20s apart, over `[1m]` windows.
+- Metrics are selected by **revision** (pod-template hash, passed in as `canary-hash` / `stable-hash`), not by `track`, because `track` gets relabelled on promotion and Prometheus sees that late.
+- The analysis reuses step 3's metrics through recording rules (`orchestrator:jobs_processed_by_revision:increase1m`, `…jobs_failed_by_revision…`, `…job_failure_ratio_by_revision:1m`). The dashboard's *Automated cutover* row plots the same series, so a person watching sees the numbers the controller acts on.
+
+| Metric | Pass | Fail | Otherwise |
+|---|---|---|---|
+| `canary-sample-size`: canary Jobs processed (1m) | ≥ 8 | never | inconclusive: not enough signal yet |
+| `canary-failure-ratio-vs-stable`: canary ratio − stable ratio, counted only once the canary has ≥ 3 failures | ≤ 5pp | > 5pp (one failed measurement aborts) | — |
+| `canary-provisioning-p95` (Jobs that reached ready) | ≤ 7.5s | > 9.5s | inconclusive (7.5–9.5s or no data) |
+
+Why these choices:
+- **Relative to stable:** platform-wide failures (like step 3's quota 403s) don't roll back a healthy canary.
+- **Minimum 3 failures:** a bad canary pulls few Jobs (7% at a 25% step in step 4), so it can still **fail fast** without having enough samples to *pass*.
+- **Inconclusive pauses instead of aborting:** a paused canary is still limited to its current small share.
+
+Human overrides still work: `just promote-full`, `just abort`. `just canary` now releases and cuts over on its own.
+
+### Verified
+
+- **Bad canary, automatic abort** (`just canary-bad` at 13:36:49 UTC):
+  - At the 25% step, `canary-failure-ratio-vs-stable` measured `0 → 0 → 1.0`. By the third measurement the canary had ≥ 3 failed Jobs (100%) against stable's 0%.
+  - The Rollout **aborted itself at 13:38:00, 71s after release**, with *"Metric canary-failure-ratio-vs-stable assessed Failed due to failed (1) > failureLimit (0)"*.
+  - `canary-sample-size` stayed inconclusive (0 → 1.8 → 3.1 Jobs/min): the bad canary was under-sampled, as expected, and the minimum-failures rule is what caught it.
+  - `RolloutAborted` reached the alert receiver at 13:38:47. That confirms step 4's rule fix.
+- **Good canary, automatic cutover** (released 13:38:56 UTC):
+  - 25% → analysis **Successful** (sample `Inconclusive 0 → Inconclusive 7.8 → Successful 15.8`, failure delta 0, p95 about 4.9s).
+  - 50% → analysis **Successful** (sample 23–33, failure delta 0, p95 about 4.8–4.95s).
+  - 100% Healthy **138s after release**, with no human action. All 4 Consumers run the new revision.
+- **Bugs found and fixed:**
+  - My first test script read `Healthy` before the controller had seen the new revision, and claimed a cutover that never happened. It now waits for `Progressing` before timing.
+  - The first p95 measurement **errored** (`reflect: slice index out of range`), because `histogram_quantile` returns no series before the canary's first sample. The query now ends in `or vector(NaN)`, which counts as no data (inconclusive).
+- **Caveat:** in the aborted run, `canary-provisioning-p95` shows `Successful` although all of its measurements were `Inconclusive`. Argo stopped the run once another metric failed, before p95 exceeded its inconclusive limit, so that label says nothing about latency.
+
+- **p95 gate retuned from evidence:**
+  - The first good cutover passed with p95 at 4.8–4.95s, just under the original ≤ 5s threshold.
+  - Over 5 minutes at 1 Job/s, 92% of sandboxes were ready within 5s and 96% within 7.5s, so the real p95 was **5–7.5s**, and normal load would often have paused healthy releases as inconclusive.
+  - The thresholds are now **≤ 7.5s pass, > 9.5s fail**. Both sit on histogram bucket edges, and a sandbox can't take longer than the 10s startup timeout to become ready.
+- **Re-checked with the new gate** (released 13:43:57 UTC):
+  - 25% analysis **Successful**: sample 6.3 → 11.6 → 21.2, failure delta 0, p95 **7.0s → 6.4s** → 4.7s.
+  - 50% analysis **Successful**: sample 25.8–30.6, failure delta 0, p95 3.5–4.5s.
+  - **Healthy 148s after release**, with no human action.
+  - Those first two p95 measurements (7.0s, 6.4s) would have been inconclusive under the old ≤ 5s gate, and this healthy release would have paused.
+
+### Shortcuts & tradeoffs
+
+| Shortcut | Consequence | Would do instead |
+|---|---|---|
+| Short windows (1m) and 3 measurements per step | Fast demo, but few samples; noisy at low traffic | Longer windows, or sequential tests sized to traffic |
+| Fixed thresholds (5pp, 8 Jobs, p95 seconds) | Must be retuned when traffic or latency changes | Compare canary latency to stable too; SLO-derived thresholds |
+| p95 comes from histogram buckets (3s, 5s, 7.5s) | Values in a bucket are interpolated; thresholds near bucket edges are coarse | Finer buckets around the target, or native histograms |
+| A regression that hits canary *and* stable (e.g. canary overloads the shared Redis) isn't caught by the relative check | Could promote a canary that harms everyone | Add global guardrails to the analysis (backlog growth, `JobsNotCompleting`) |
+| The p95 slow-canary scenario wasn't tested | That path is only reviewed, not exercised | A fault-injection flag in the Consumer (e.g. a provisioning delay) |
+| Analysis Prometheus address is hard-coded | Tied to this monitoring install | Pass it in via an argument / ClusterAnalysisTemplate |

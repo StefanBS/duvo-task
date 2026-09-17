@@ -7,5 +7,6 @@ resources:
   - redis.yaml
   - producer.yaml
   - consumer.yaml
+  - analysis.yaml
   - sandboxes.yaml
   - alert-receiver.yaml

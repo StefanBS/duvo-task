@@ -111,7 +111,7 @@ alerts:
 rollout:
     kubectl argo rollouts -n {{ns}} get rollout consumer --watch
 
-# Release the current code as a new Consumer version (canary at 25%, then paused)
+# Release the current code as a new Consumer version (automated, metric-gated cutover)
 canary: import
     kubectl argo rollouts -n {{ns}} set image consumer consumer={{image_repo}}:$(cat .build/version)
     kubectl argo rollouts -n {{ns}} get rollout consumer
@@ -126,11 +126,11 @@ canary-bad:
 canary-reset:
     kubectl -n {{ns}} patch rollout consumer --type=json -p '[{"op":"remove","path":"/spec/template/spec/containers/0/env"}]' || true
 
-# Advance the canary to its next step
+# Manual override: advance the canary to its next step (e.g. after an inconclusive analysis)
 promote:
     kubectl argo rollouts -n {{ns}} promote consumer
 
-# Skip remaining steps and roll the canary out to 100%
+# Manual override: skip remaining steps and analysis, roll the canary out to 100%
 promote-full:
     kubectl argo rollouts -n {{ns}} promote consumer --full
 

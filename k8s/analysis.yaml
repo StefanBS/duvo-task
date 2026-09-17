@@ -1,0 +1,72 @@
+# Health gate for automated Consumer cutover. Each canary step runs this against
+# Prometheus; the Rollout only advances if every metric passes.
+#   Successful   -> next step (eventually 100%: the canary becomes stable)
+#   Failed       -> Rollout aborts: canary scaled down, stable takes all Jobs
+#   Inconclusive -> Rollout pauses for a human (not enough signal is not "bad")
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: consumer-canary-health
+  namespace: sandbox-orchestrator
+spec:
+  args:
+    - name: canary-hash
+    - name: stable-hash
+    - name: prometheus-address
+      value: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+  metrics:
+    # Enough signal? A canary that has processed too few Jobs can't be judged healthy.
+    - name: canary-sample-size
+      initialDelay: 30s # let the [1m] windows fill with canary data
+      interval: 20s
+      count: 3
+      inconclusiveLimit: 2
+      consecutiveErrorLimit: 2
+      successCondition: result[0] >= 8
+      failureCondition: "false" # too few samples is inconclusive, never a failure on its own
+      provider:
+        prometheus:
+          address: "{{args.prometheus-address}}"
+          query: |
+            sum(orchestrator:jobs_processed_by_revision:increase1m{revision="{{args.canary-hash}}"}) or vector(0)
+
+    # Canary failure ratio minus stable's. Relative, so platform-wide failures (quota,
+    # Redis, node) don't fail the canary. Only counts once the canary has >= 3 failures,
+    # so a bad canary that pulls few Jobs can still fail fast.
+    - name: canary-failure-ratio-vs-stable
+      initialDelay: 30s
+      interval: 20s
+      count: 3
+      failureLimit: 0 # one failed measurement aborts
+      inconclusiveLimit: 2
+      consecutiveErrorLimit: 2
+      successCondition: result[0] <= 0.05
+      failureCondition: result[0] > 0.05
+      provider:
+        prometheus:
+          address: "{{args.prometheus-address}}"
+          query: |
+            (
+                (sum(orchestrator:job_failure_ratio_by_revision:1m{revision="{{args.canary-hash}}"}) or vector(0))
+              - (sum(orchestrator:job_failure_ratio_by_revision:1m{revision="{{args.stable-hash}}"}) or vector(0))
+            )
+            * ((sum(orchestrator:jobs_failed_by_revision:increase1m{revision="{{args.canary-hash}}"}) or vector(0)) >= bool 3)
+
+    # Canary Sandbox provisioning p95 (Jobs that reached ready). NaN = no data yet.
+    - name: canary-provisioning-p95
+      initialDelay: 30s
+      interval: 20s
+      count: 3
+      failureLimit: 0
+      inconclusiveLimit: 2
+      consecutiveErrorLimit: 2
+      # Thresholds sit on histogram bucket edges (5, 7.5, 10): measured p95 at 1 Job/s is 5–7.5s,
+      # and ready can't exceed the 10s startup timeout, so > 9.5s means "nearly timing out".
+      successCondition: "!isNaN(result[0]) && result[0] <= 7.5"
+      failureCondition: "!isNaN(result[0]) && result[0] > 9.5"
+      provider:
+        prometheus:
+          address: "{{args.prometheus-address}}"
+          query: |
+            histogram_quantile(0.95, sum by (le) (rate(orchestrator_sandbox_provision_duration_seconds_bucket{revision="{{args.canary-hash}}", outcome="ready"}[1m])))
+              or vector(NaN) # no series yet: "no data" rather than a measurement error

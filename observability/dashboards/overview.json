@@ -1156,7 +1156,7 @@
     },
     {
       "type": "row",
-      "title": "Sandbox lifecycle",
+      "title": "Automated cutover: canary analysis inputs & results",
       "id": 25,
       "collapsed": false,
       "gridPos": {
@@ -1164,6 +1164,210 @@
         "w": 24,
         "x": 0,
         "y": 37
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Analysis input: Jobs processed per revision (1m)",
+      "description": "canary-sample-size passes at >= 8 for the canary revision",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "orchestrator:jobs_processed_by_revision:increase1m",
+          "legendFormat": "{{revision}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 5,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 38
+      },
+      "id": 26
+    },
+    {
+      "type": "timeseries",
+      "title": "Analysis input: failure ratio per revision (1m)",
+      "description": "canary-failure-ratio-vs-stable fails when canary - stable > 5pp with >= 3 canary failures",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "orchestrator:job_failure_ratio_by_revision:1m",
+          "legendFormat": "{{revision}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "fillOpacity": 5,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 38
+      },
+      "id": 27
+    },
+    {
+      "type": "timeseries",
+      "title": "Analysis metric results",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (metric, phase) (analysis_run_metric_phase{exported_namespace=\"sandbox-orchestrator\"} == 1)",
+          "legendFormat": "{{metric}}: {{phase}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 5,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 38
+      },
+      "id": 28
+    },
+    {
+      "type": "timeseries",
+      "title": "Rollout phase",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (phase) (rollout_info{name=\"consumer\"} == 1)",
+          "legendFormat": "{{phase}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 20,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 38
+      },
+      "id": 29
+    },
+    {
+      "type": "row",
+      "title": "Sandbox lifecycle",
+      "id": 30,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 45
       }
     },
     {
@@ -1210,9 +1414,9 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 38
+        "y": 46
       },
-      "id": 26
+      "id": 31
     },
     {
       "type": "timeseries",
@@ -1276,9 +1480,9 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 38
+        "y": 46
       },
-      "id": 27
+      "id": 32
     },
     {
       "type": "timeseries",
@@ -1324,20 +1528,20 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 38
+        "y": 46
       },
-      "id": 28
+      "id": 33
     },
     {
       "type": "row",
       "title": "Logs",
-      "id": 29,
+      "id": 34,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 53
       }
     },
     {
@@ -1367,9 +1571,9 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 46
+        "y": 54
       },
-      "id": 30
+      "id": 35
     },
     {
       "type": "logs",
@@ -1398,9 +1602,9 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 46
+        "y": 54
       },
-      "id": 31
+      "id": 36
     }
   ]
 }

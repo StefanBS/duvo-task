@@ -48,6 +48,10 @@ _Avoid_: Deployment, rollout, upgrade
 The Consumers running the version under test during a Consumer Release.
 _Avoid_: B, new, candidate
 
+**Cutover**:
+The automated completion of a Consumer Release: the Canary replaces Stable once metrics show it is healthy, or is withdrawn if they show it is not.
+_Avoid_: Promotion, go-live, switch
+
 **Stable**:
 The Consumers running the last fully released version; they take every Job the Canary does not.
 _Avoid_: A, old, baseline, production

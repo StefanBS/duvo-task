@@ -21,6 +21,19 @@ spec:
         - record: orchestrator:sandbox_provision_seconds:p95_5m
           expr: histogram_quantile(0.95, sum by (le) (rate(orchestrator_sandbox_provision_duration_seconds_bucket{outcome="ready"}[5m])))
 
+    # Per-revision Job health: shared by the dashboard and the canary AnalysisTemplate
+    # (k8s/analysis.yaml), so humans see the same numbers the automated cutover decides on.
+    - name: sandbox-orchestrator.canary
+      rules:
+        - record: orchestrator:jobs_processed_by_revision:increase1m
+          expr: sum by (revision) (increase(orchestrator_jobs_processed_total{revision!=""}[1m]))
+        - record: orchestrator:jobs_failed_by_revision:increase1m
+          expr: sum by (revision) (increase(orchestrator_jobs_processed_total{revision!="", outcome=~"failed|invalid"}[1m]))
+        - record: orchestrator:job_failure_ratio_by_revision:1m
+          expr: |
+            orchestrator:jobs_failed_by_revision:increase1m
+              / clamp_min(orchestrator:jobs_processed_by_revision:increase1m, 1)
+
     - name: sandbox-orchestrator.alerts
       rules:
         - alert: JobBacklogGrowing
@@ -88,6 +101,14 @@ spec:
           annotations:
             summary: "Rollout {{ $labels.name }} is degraded (canary aborted or failing)"
             description: Stable version is serving all Jobs. Inspect with `just rollout`; fix and re-release, or `kubectl argo rollouts undo`.
+
+        - alert: RolloutPaused
+          expr: max by (name) (rollout_info{exported_namespace="sandbox-orchestrator", phase="Paused"}) == 1
+          for: 2m
+          labels: { severity: warning }
+          annotations:
+            summary: "Rollout {{ $labels.name }} has been paused for 2m (canary analysis inconclusive?)"
+            description: Not enough signal to cut over automatically. Inspect with `just rollout`, then `just promote-full` or `just abort`.
 
         - alert: RedisDown
           expr: absent(redis_up{namespace="sandbox-orchestrator"} == 1)

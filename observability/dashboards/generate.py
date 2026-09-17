@@ -139,6 +139,22 @@ add(
     h=7,
 )
 
+row("Automated cutover: canary analysis inputs & results")
+add(
+    ts("Analysis input: Jobs processed per revision (1m)",
+       [("orchestrator:jobs_processed_by_revision:increase1m", "{{revision}}")], 0, 6,
+       desc="canary-sample-size passes at >= 8 for the canary revision"),
+    ts("Analysis input: failure ratio per revision (1m)",
+       [("orchestrator:job_failure_ratio_by_revision:1m", "{{revision}}")], 6, 6, "percentunit",
+       desc="canary-failure-ratio-vs-stable fails when canary - stable > 5pp with >= 3 canary failures"),
+    ts("Analysis metric results",
+       [('max by (metric, phase) (analysis_run_metric_phase{exported_namespace="sandbox-orchestrator"} == 1)',
+         "{{metric}}: {{phase}}")], 12, 6),
+    ts("Rollout phase",
+       [('max by (phase) (rollout_info{name="consumer"} == 1)', "{{phase}}")], 18, 6, stack=True),
+    h=7,
+)
+
 row("Sandbox lifecycle")
 add(
     ts("Sandbox pods by phase",
