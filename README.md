@@ -360,3 +360,14 @@ Human overrides still work: `just promote-full`, `just abort`. `just canary` now
 | A regression that hits canary *and* stable (e.g. canary overloads the shared Redis) isn't caught by the relative check | Could promote a canary that harms everyone | Add global guardrails to the analysis (backlog growth, `JobsNotCompleting`) |
 | The p95 slow-canary scenario wasn't tested | That path is only reviewed, not exercised | A fault-injection flag in the Consumer (e.g. a provisioning delay) |
 | Analysis Prometheus address is hard-coded | Tied to this monitoring install | Pass it in via an argument / ClusterAnalysisTemplate |
+
+## Personal notes
+
+- **Timebox:** I finished and committed Step 3 at around the 1-hour mark (commit `8447689`). If you want to be strict about the timebox, you can evaluate up to that point. I kept recording and finished Steps 4 and 5 anyway; the full video is 01:44:00. That time includes all the testing between steps, which took a while.
+- **Testing:** I didn't have time to test everything manually. I did check the dashboards and the canary deployments in Kubernetes myself, and everything seemed to work. The rest was checked through the scripted runs recorded in the "Verified" sections above.
+- **Python typing:** I would have added a typing library to the Python application, with static type checking.
+- **CI/CD:** there's no CI/CD pipeline. I would have added:
+  - pipelines to build and push the container image
+  - vulnerability reports that run periodically
+  - unit tests and pre-commit checks as gates
+- **Preparation:** I should have had the monitoring stack ready beforehand, not just the k3d cluster, and I didn't.
