@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consumer
+  labels:
+    app.kubernetes.io/name: consumer
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: consumer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: consumer
+    spec:
+      # Longest simulated Job is 3s; leave room to finish and ack it on SIGTERM.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: consumer
+          image: localhost/orchestrator:dev
+          imagePullPolicy: Never
+          command: ["consumer"]
+          envFrom:
+            - configMapRef:
+                name: orchestrator-config
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }

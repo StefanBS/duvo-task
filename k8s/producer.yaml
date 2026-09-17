@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: producer
+  labels:
+    app.kubernetes.io/name: producer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: producer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: producer
+    spec:
+      containers:
+        - name: producer
+          image: localhost/orchestrator:dev
+          imagePullPolicy: Never
+          command: ["producer"]
+          envFrom:
+            - configMapRef:
+                name: orchestrator-config
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }

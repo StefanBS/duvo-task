@@ -1,0 +1,5 @@
+.venv
+.build
+.git
+tests
+k8s

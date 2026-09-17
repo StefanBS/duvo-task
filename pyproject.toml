@@ -1,0 +1,20 @@
+[project]
+name = "orchestrator"
+version = "0.1.0"
+description = "Lightweight sandbox orchestration platform"
+requires-python = ">=3.14"
+dependencies = [
+    "python-ulid>=3.0",
+    "redis>=5.2",
+]
+
+[project.scripts]
+producer = "orchestrator.producer:main"
+consumer = "orchestrator.consumer:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"
