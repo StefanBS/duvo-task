@@ -15,6 +15,8 @@ spec:
       labels:
         app.kubernetes.io/name: consumer
     spec:
+      # Avoid Service-link env vars (e.g. ALERT_RECEIVER_PORT=tcp://...) clashing with our config.
+      enableServiceLinks: false
       serviceAccountName: consumer
       # Sandbox startup timeout is 20s; leave room to finish and ack on SIGTERM.
       terminationGracePeriodSeconds: 30
@@ -23,6 +25,9 @@ spec:
           image: localhost/orchestrator:dev
           imagePullPolicy: Never
           command: ["consumer"]
+          ports:
+            - name: metrics
+              containerPort: 9000
           envFrom:
             - configMapRef:
                 name: orchestrator-config

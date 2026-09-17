@@ -5,7 +5,7 @@ import socket
 
 import redis
 
-from orchestrator import config
+from orchestrator import config, metrics
 from orchestrator.job import JOB_TYPES, Job
 from orchestrator.lifecycle import stop_event
 from orchestrator.logging import setup
@@ -16,6 +16,7 @@ def main() -> None:
     stop = stop_event()
     r = redis.Redis.from_url(config.REDIS_URL, decode_responses=True)
     interval = 1 / config.JOBS_PER_SECOND
+    metrics.serve("producer")
     log.info("producer.started", extra={"stream": config.STREAM, "jobsPerSecond": config.JOBS_PER_SECOND})
 
     while not stop.is_set():
@@ -28,8 +29,10 @@ def main() -> None:
                 maxlen=config.STREAM_MAXLEN,
                 approximate=True,
             )
+            metrics.JOBS_ENQUEUED.labels(job.type).inc()
             log.info("job.enqueued", extra={**fields, "entryId": entry_id})
         except redis.RedisError:
+            metrics.ENQUEUE_FAILURES.inc()
             # Shortcut: the Job is dropped, not retried or buffered.
             log.exception("job.enqueue_failed", extra=fields)
         stop.wait(interval)

@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - podmonitors.yaml
+  - alerts.yaml
+configMapGenerator:
+  - name: sandbox-orchestrator-dashboard
+    namespace: monitoring
+    files:
+      - overview.json=../dashboards/overview.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"

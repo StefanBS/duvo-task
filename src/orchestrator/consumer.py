@@ -9,7 +9,7 @@ import time
 
 import redis
 
-from orchestrator import config
+from orchestrator import config, metrics
 from orchestrator.job import InvalidJob, Job
 from orchestrator.lifecycle import stop_event
 from orchestrator.logging import setup
@@ -33,8 +33,14 @@ def process(r: redis.Redis, sandboxes: SandboxManager, entry_id: str, fields: di
         # Ack so a poison message doesn't block the queue. Shortcut: no dead-letter stream.
         log.error("job.invalid", extra={"entryId": entry_id, "raw": fields, "error": str(e)})
         r.xack(config.STREAM, config.GROUP, entry_id)
+        metrics.JOBS_PROCESSED.labels("unknown", "invalid").inc()
         return
 
+    with metrics.JOBS_IN_PROGRESS.track_inprogress():
+        _run(r, sandboxes, entry_id, job)
+
+
+def _run(r: redis.Redis, sandboxes: SandboxManager, entry_id: str, job: Job) -> None:
     ctx = {"jobId": job.job_id, "type": job.type, "entryId": entry_id}
     log.info("job.started", extra=ctx)
     started = time.monotonic()
@@ -48,16 +54,20 @@ def process(r: redis.Redis, sandboxes: SandboxManager, entry_id: str, fields: di
     except Exception as e:
         # Shortcut: no retries. Tear down what we created and fail the Job visibly.
         log.exception("job.failed", extra={**ctx, "error": str(e), "durationMs": _ms_since(started)})
+        metrics.SANDBOX_PROVISION_SECONDS.labels(job.type, "failed").observe(time.monotonic() - started)
         if sandbox_name:
             try:
                 sandboxes.delete(sandbox_name)
             except Exception:
                 log.exception("sandbox.delete_failed", extra=ctx)
         r.xack(config.STREAM, config.GROUP, entry_id)
+        metrics.JOBS_PROCESSED.labels(job.type, "failed").inc()
         return
 
+    metrics.SANDBOX_PROVISION_SECONDS.labels(job.type, "ready").observe(time.monotonic() - started)
     log.info("sandbox.ready", extra={**ctx, "url": sandbox.url, "durationMs": _ms_since(started)})
     r.xack(config.STREAM, config.GROUP, entry_id)
+    metrics.JOBS_PROCESSED.labels(job.type, "completed").inc()
     log.info("job.completed", extra={**ctx, "durationMs": _ms_since(started)})
 
 
@@ -75,6 +85,7 @@ def reclaim(r: redis.Redis) -> list[tuple[str, dict | None]]:
         count=10,
     )
     for entry_id, _fields in entries:
+        metrics.JOBS_RECLAIMED.inc()
         log.warning("job.reclaimed", extra={"entryId": entry_id})
     return entries
 
@@ -85,6 +96,7 @@ def main() -> None:
     stop = stop_event()
     r = redis.Redis.from_url(config.REDIS_URL, decode_responses=True)
     sandboxes = SandboxManager()
+    metrics.serve("consumer")
     log.info("consumer.started", extra={"stream": config.STREAM, "group": config.GROUP})
 
     last_claim = last_reap = 0.0
@@ -98,8 +110,12 @@ def main() -> None:
             if time.monotonic() - last_reap >= config.SANDBOX_REAP_INTERVAL_S:
                 last_reap = time.monotonic()
                 try:
-                    sandboxes.reap_terminated()
+                    reaped = sandboxes.reap_terminated()
+                    if reaped:
+                        metrics.SANDBOXES_REAPED.inc(len(reaped))
+                        log.info("sandbox.reaped", extra={"count": len(reaped), "sandboxes": reaped})
                 except Exception:
+                    metrics.SANDBOX_REAP_FAILURES.inc()
                     log.exception("sandbox.reap_failed")
             if time.monotonic() - last_claim >= config.CLAIM_INTERVAL_S:
                 entries = reclaim(r)
@@ -118,6 +134,7 @@ def main() -> None:
                     break  # Unprocessed entries stay pending and will be reclaimed.
                 process(r, sandboxes, entry_id, fields)
         except redis.RedisError as e:
+            metrics.REDIS_ERRORS.inc()
             if "NOGROUP" in str(e):
                 group_ready = False  # Redis lost the group (e.g. data loss); recreate it.
             log.exception("redis.error")

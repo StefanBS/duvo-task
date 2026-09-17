@@ -27,7 +27,7 @@ import: build
 deploy: import
     kubectl apply -k k8s
     kubectl -n {{ns}} rollout status statefulset/redis --timeout=120s
-    kubectl -n {{ns}} rollout restart deployment/producer deployment/consumer
+    kubectl -n {{ns}} rollout restart deployment/producer deployment/consumer deployment/alert-receiver
     kubectl -n {{ns}} rollout status deployment/producer --timeout=120s
     kubectl -n {{ns}} rollout status deployment/consumer --timeout=120s
 
@@ -62,6 +62,54 @@ curl path="/" sandbox="":
     try: r=urllib.request.urlopen(sys.argv[1], timeout=5); print(r.status); print(r.read().decode())
     except urllib.error.HTTPError as e: print(e.code); print(e.read().decode())" "$url"
 
+# Install Prometheus/Alertmanager/Grafana, Loki and Alloy, then our monitors, alerts and dashboard
+obs-up:
+    helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack --version 91.4.1 \
+      -n monitoring --create-namespace -f observability/kube-prometheus-stack.yaml --wait --timeout 10m
+    helm upgrade --install loki grafana/loki --version 7.3.0 -n monitoring -f observability/loki.yaml --wait --timeout 10m
+    helm upgrade --install alloy grafana/alloy --version 1.12.1 -n monitoring -f observability/alloy.yaml --wait --timeout 5m
+    just obs-apply
+
+# Regenerate the dashboard and apply PodMonitors, PrometheusRules and the dashboard ConfigMap
+obs-apply:
+    uv run python observability/dashboards/generate.py > observability/dashboards/overview.json
+    kubectl kustomize observability/k8s --load-restrictor LoadRestrictionsNone | kubectl apply -f -
+
+# Grafana on http://localhost:3000 (admin/admin)
+grafana:
+    kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+
+# Prometheus on http://localhost:9090
+prometheus:
+    kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
+
+# Alertmanager on http://localhost:9093
+alertmanager:
+    kubectl -n monitoring port-forward svc/kube-prometheus-stack-alertmanager 9093:9093
+
+# Show alerts as received by the alert receiver
+alerts:
+    kubectl -n {{ns}} logs deploy/alert-receiver | jq -c 'select(.event | startswith("alert.")) | {ts, event, alertname, severity, summary}'
+
+# Chaos: stop all Consumers (expect JobBacklogGrowing, ConsumersDown, JobsNotCompleting)
+chaos-consumers-down:
+    kubectl -n {{ns}} scale deployment/consumer --replicas=0
+
+# Chaos: make every new Sandbox fail to pull its image (expect JobFailureRatioHigh)
+chaos-bad-image:
+    kubectl -n {{ns}} set env deployment/consumer SANDBOX_IMAGE=ghcr.io/stefanprodan/podinfo:does-not-exist
+
+# Undo all chaos
+chaos-reset:
+    kubectl -n {{ns}} set env deployment/consumer SANDBOX_IMAGE-
+    kubectl apply -k k8s
+    kubectl -n {{ns}} rollout status deployment/consumer --timeout=120s
+
 # Tear everything down (including Redis data and Sandboxes)
 down:
     kubectl delete namespace {{ns}} sandboxes --ignore-not-found
+
+# Remove the observability stack
+obs-down:
+    helm uninstall alloy loki kube-prometheus-stack -n monitoring --ignore-not-found
+    kubectl delete namespace monitoring --ignore-not-found

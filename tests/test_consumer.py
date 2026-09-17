@@ -50,3 +50,19 @@ def test_invalid_job_is_acked_without_creating_a_sandbox():
     process(r, sandboxes, "3-0", None)  # entry trimmed from the stream while pending
     assert [a[2] for a in r.acked] == ["2-0", "3-0"]
     assert sandboxes.created == []
+
+
+def _processed(job_type, outcome):
+    from prometheus_client import REGISTRY
+
+    return REGISTRY.get_sample_value(
+        "orchestrator_jobs_processed_total", {"type": job_type, "outcome": outcome}
+    ) or 0
+
+
+def test_outcomes_are_counted():
+    before = {o: _processed("shell", o) for o in ("completed", "failed")}
+    process(FakeRedis(), FakeSandboxes(), "1-0", {"job": Job.new("shell").to_json()})
+    process(FakeRedis(), FakeSandboxes(fail_with=SandboxError("x")), "2-0", {"job": Job.new("shell").to_json()})
+    assert _processed("shell", "completed") == before["completed"] + 1
+    assert _processed("shell", "failed") == before["failed"] + 1

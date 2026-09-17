@@ -4,11 +4,12 @@ A lightweight sandbox orchestration platform, built step by step. Domain languag
 
 ## Quick start
 
-Requirements: a running k3d cluster (`k3s-default`), `podman`, `kubectl`, `uv`, `just`, `jq`.
+Requirements: a running k3d cluster (`k3s-default`), `podman`, `kubectl`, `helm`, `uv`, `just`, `jq`.
 
 ```bash
 just test     # unit tests
 just deploy   # build image, import into k3d, apply manifests, restart workloads
+just obs-up   # observability stack (after deploy: our PodMonitors/rules live in its namespace)
 just smoke    # end-to-end check
 just logs     # tail Consumer logs (just logs producer)
 just sandboxes            # list Sandbox pods/services
@@ -25,9 +26,13 @@ src/orchestrator/
   sandbox.py    Sandbox manifests + create/adopt, wait-ready, delete, reap
   producer.py   places synthetic Jobs on the Job Queue at JOBS_PER_SECOND
   consumer.py   reads, provisions a Sandbox per Job, acks; reclaims abandoned Jobs
+  metrics.py    Prometheus metrics (served on :9000/metrics)
+  alert_receiver.py  Alertmanager webhook target that logs alerts
   logging.py    JSON-lines structured logging
   config.py     env-var configuration
 k8s/            Kustomize manifests (namespaces sandbox-orchestrator, sandboxes)
+observability/  Helm values (kube-prometheus-stack, Loki, Alloy), PodMonitors,
+                alert rules, dashboard generator
 scripts/smoke.sh
 ```
 
@@ -116,3 +121,96 @@ Consumer ──create Pod+Service──▶ ns "sandboxes"
 | Every Consumer runs the cleanup | Duplicate delete calls (harmless, since they do nothing twice) | A single controller, or leader election |
 | Sandboxes use a public image pulled at runtime | The first start depends on ghcr.io being reachable | Mirror the image, or pre-pull it on the nodes |
 | A dependency (the `kubernetes` client) increased image size | Bigger image, slower import | A lighter client (e.g. lightkube) |
+
+## Step 3 — Logs, metrics, dashboard, alerting
+
+```
+producer :9000/metrics ─┐
+consumer :9000/metrics ─┤
+redis_exporter :9121 ───┼──▶ Prometheus ──rules──▶ Alertmanager ──webhook──▶ alert-receiver ─┐
+kube-state-metrics ─────┘        │                                                          │ logs
+                                 ▼                                                          ▼
+                              Grafana ◀──────────────────────── Loki ◀── Alloy (pod logs: sandbox-orchestrator, sandboxes)
+```
+
+```bash
+just obs-up          # helm install kube-prometheus-stack, loki, alloy + our monitors/rules/dashboard
+just grafana         # http://localhost:3000 (admin/admin) → "Sandbox Orchestrator — Overview"
+just prometheus      # http://localhost:9090
+just alertmanager    # http://localhost:9093
+just alerts          # alerts as delivered to the alert receiver
+just chaos-consumers-down | chaos-bad-image | chaos-reset
+```
+
+**Stack** (`observability/`, namespace `monitoring`):
+- **kube-prometheus-stack:** Prometheus, Alertmanager, Grafana and kube-state-metrics. It's trimmed: no node-exporter, no control-plane scraping, no default rules or dashboards.
+- **Loki:** single binary, filesystem storage.
+- **Alloy:** tails Pod logs through the Kubernetes API.
+- **Storage:** Prometheus and Loki keep 24h of data on `local-path` PVCs.
+
+**What is measured**
+
+| Area | Source | Signals |
+|---|---|---|
+| Producer | app metrics | `orchestrator_jobs_enqueued_total{type}`, `orchestrator_job_enqueue_failures_total`, `up` |
+| Job Queue | `redis_exporter` sidecar (`--check-streams=jobs`) | `redis_stream_group_lag` (undelivered), `redis_stream_group_messages_pending` (unacked), stream length, consumers, `redis_up` |
+| Jobs / Consumers | app metrics | `orchestrator_jobs_processed_total{type,outcome}`, `orchestrator_sandbox_provision_duration_seconds{type,outcome}`, `jobs_in_progress`, `jobs_reclaimed_total`, `redis_errors_total` |
+| Sandbox lifecycle | kube-state-metrics + app metrics | Pods by phase, container waiting reasons (e.g. `ErrImagePull`), quota used vs hard, `sandboxes_reaped_total`, `sandbox_reap_failures_total` |
+| Logs | Alloy → Loki | Every JSON log line. Labels: `namespace`, `app`, `pod`, `container`, `level`. `jobId`/`event`/`url` stay in the body and are extracted with `\| json` |
+
+The queue is measured by the exporter, not by the Consumers, so "all Consumers dead" shows up as a growing backlog rather than as missing data. Metric labels never include `jobId` or sandbox names; per-Job questions go to Loki:
+
+```logql
+{namespace="sandbox-orchestrator"} |= "01M2QP5H9CYQ2RNSRSC3YXQ9VA" | json
+sum by (event) (count_over_time({app="consumer"} | json [5m]))
+```
+
+**Dashboard.** *Sandbox Orchestrator — Overview* is generated from `observability/dashboards/generate.py` and loaded by Grafana's dashboard sidecar. Rows:
+1. **Health at a glance:** Jobs completed per minute, failure ratio, backlog, provisioning p95, quota used, firing alerts.
+2. **Producer**
+3. **Job Queue**
+4. **Jobs & Consumers**
+5. **Sandbox lifecycle**
+6. **Logs:** errors, failed Jobs and alerts, plus a "trace a jobId" panel driven by a dashboard variable.
+
+**Alerts** (`observability/k8s/alerts.yaml`). They're symptom-based, built on recording rules, and each has a short `for:` so it can be demoed. Alertmanager sends them to a webhook `alert-receiver`, which logs each one as JSON, so alerts show up in Loki and on the dashboard.
+
+| Alert | Fires when | Severity |
+|---|---|---|
+| `JobBacklogGrowing` | backlog (lag + pending) > 10 for 2m | warning |
+| `JobsNotCompleting` | Jobs are being enqueued but the completion rate has been 0 for 3m | critical |
+| `JobFailureRatioHigh` | > 20% of Jobs failed (5m window), for 2m | critical |
+| `SandboxProvisioningSlow` | p95 time to ready > 10s for 5m (the startup timeout is 20s) | warning |
+| `SandboxQuotaNearlyExhausted` | sandbox pods > 80% of quota for 5m | warning |
+| `ProducerDown` / `ConsumersDown` / `RedisDown` | no healthy target for 1m | critical |
+
+### Verified
+
+- **Scrape targets:** all 4 are `up` (producer, 2 consumers, redis-exporter). All 8 alert rules and 5 recording rules load with `health=ok`.
+- **Dashboard:** it loads in Grafana, and every Prometheus panel query returns data through Grafana's datasource proxy. The one exception is the "waiting containers" panel, which is empty because no container is waiting.
+- **Loki:** it receives logs from `producer`, `consumer`, `redis`, `sandbox` and `alert-receiver`. `sum by (event) (count_over_time({app="consumer"} | json [10m]))` shows the full lifecycle: `job.started`, `sandbox.created`, `sandbox.ready`, `job.completed` and `sandbox.reaped`.
+- **Baseline:** failure ratio 0, backlog 0, provisioning p95 about 3s, about 25 of 50 quota pods in use.
+- **Chaos scenario 1** (`just chaos-consumers-down` at 13:06:27 UTC). Every alert went through Alertmanager to `alert-receiver` and was logged:
+
+  | Alert | Received at | After chaos started |
+  |---|---|---|
+  | `ConsumersDown` | 13:08:23 | 1m56s |
+  | `JobBacklogGrowing` | 13:09:53 | 3m26s |
+  | `JobsNotCompleting` | 13:11:38 | 5m11s |
+
+  Each delay is the rule's `for:`, plus scrape and evaluation intervals, Alertmanager's `group_wait`, and (for the backlog alert) about 50s for the backlog to pass 10 at 0.2 Jobs/s.
+- **Not yet verified:** the other alerts have not been seen firing yet: `JobFailureRatioHigh` (`just chaos-bad-image`), `SandboxProvisioningSlow`, `SandboxQuotaNearlyExhausted`, `ProducerDown` and `RedisDown`.
+
+### Shortcuts & tradeoffs
+
+| Shortcut | Consequence | Would do instead |
+|---|---|---|
+| Alerts go to a webhook that only logs them | Nobody gets paged | PagerDuty or Slack receivers, routed by severity, with runbook links in annotations |
+| Short `for:` durations and fixed thresholds | Could be noisy in production | Tune on real traffic; SLO burn-rate alerts (e.g. on the Job success ratio) |
+| Everything runs single-replica (Prometheus, Loki, Alertmanager, Grafana) | Monitoring goes down with the node | HA pairs, remote storage, or a managed backend (Grafana Cloud, Mimir) |
+| The monitoring stack runs inside the cluster it watches | A cluster outage also blinds us | An external uptime or "dead man's switch" check (e.g. Watchdog → healthchecks.io) |
+| Grafana uses `admin/admin` and is reachable only by port-forward | Not something to share | SSO and an Ingress |
+| No logs collected from `monitoring` / `kube-system` | The monitoring stack can't be debugged from Loki | Collect them, with a shorter retention |
+| No kubelet or cAdvisor metrics | No CPU or memory usage per sandbox | Turn on the kubelet ServiceMonitor |
+| No tracing | Latency inside a Job isn't broken down beyond its log timestamps | OpenTelemetry spans around create / wait-ready |
+| Our PodMonitors and rules live in `sandbox-orchestrator`, but are applied by `just obs-up` | `obs-up` fails if the app hasn't been deployed first | One chart or Kustomize overlay that owns the ordering |

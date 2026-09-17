@@ -47,6 +47,19 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+        # Measures the Job Queue independently of the Consumers.
+        - name: redis-exporter
+          image: docker.io/oliver006/redis_exporter:v1.74.0
+          args: ["--check-streams=jobs", "--include-system-metrics=false"]
+          env:
+            - name: REDIS_ADDR
+              value: redis://localhost:6379
+          ports:
+            - name: metrics
+              containerPort: 9121
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
   volumeClaimTemplates:
     - metadata:
         name: data

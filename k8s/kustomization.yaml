@@ -8,3 +8,4 @@ resources:
   - producer.yaml
   - consumer.yaml
   - sandboxes.yaml
+  - alert-receiver.yaml

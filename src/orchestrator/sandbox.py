@@ -150,14 +150,19 @@ class SandboxManager:
             time.sleep(0.5)
         raise SandboxError(f"not ready after {timeout_s}s: {last_state}")
 
-    def reap_terminated(self) -> None:
+    def reap_terminated(self) -> list[str]:
         """Delete Sandboxes whose Pod has stopped (e.g. TTL expired); their Services follow via ownerReferences."""
+        reaped = []
         for phase in ("Failed", "Succeeded"):
-            self.api.delete_collection_namespaced_pod(
+            pods = self.api.list_namespaced_pod(
                 self.ns,
                 label_selector="app.kubernetes.io/name=sandbox",
                 field_selector=f"status.phase={phase}",
             )
+            for pod in pods.items:
+                self.delete(pod.metadata.name)
+                reaped.append(pod.metadata.name)
+        return reaped
 
     def delete(self, name: str) -> None:
         try:

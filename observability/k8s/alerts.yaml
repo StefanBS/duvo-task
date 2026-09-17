@@ -1,0 +1,87 @@
+# Symptom-based alerts. `for:` durations are short so they can be demoed.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: sandbox-orchestrator
+  namespace: sandbox-orchestrator
+spec:
+  groups:
+    - name: sandbox-orchestrator.recording
+      rules:
+        - record: orchestrator:job_backlog
+          expr: sum(redis_stream_group_lag{stream="jobs"}) + sum(redis_stream_group_messages_pending{stream="jobs"})
+        - record: orchestrator:jobs_completed:rate2m
+          expr: sum(rate(orchestrator_jobs_processed_total{outcome="completed"}[2m])) or vector(0)
+        - record: orchestrator:jobs_enqueued:rate2m
+          expr: sum(rate(orchestrator_jobs_enqueued_total[2m])) or vector(0)
+        - record: orchestrator:job_failure_ratio:rate5m
+          expr: |
+            sum(rate(orchestrator_jobs_processed_total{outcome=~"failed|invalid"}[5m]))
+              / clamp_min(sum(rate(orchestrator_jobs_processed_total[5m])), 1e-9)
+        - record: orchestrator:sandbox_provision_seconds:p95_5m
+          expr: histogram_quantile(0.95, sum by (le) (rate(orchestrator_sandbox_provision_duration_seconds_bucket{outcome="ready"}[5m])))
+
+    - name: sandbox-orchestrator.alerts
+      rules:
+        - alert: JobBacklogGrowing
+          expr: orchestrator:job_backlog > 10
+          for: 2m
+          labels: { severity: warning }
+          annotations:
+            summary: "Job backlog is {{ $value }} (undelivered + unacked)"
+            description: Consumers are not keeping up with the Producer. Check consumer health and sandbox provisioning latency.
+
+        - alert: JobsNotCompleting
+          expr: orchestrator:jobs_enqueued:rate2m > 0 and orchestrator:jobs_completed:rate2m == 0
+          for: 3m
+          labels: { severity: critical }
+          annotations:
+            summary: Jobs are being enqueued but none are completing
+            description: The pipeline is stalled. Check Consumers are running and sandboxes can be provisioned.
+
+        - alert: JobFailureRatioHigh
+          expr: orchestrator:job_failure_ratio:rate5m > 0.2
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: "{{ $value | humanizePercentage }} of Jobs are failing"
+            description: 'Inspect failures in Loki: {namespace="sandbox-orchestrator"} | json | event="job.failed"'
+
+        - alert: SandboxProvisioningSlow
+          expr: orchestrator:sandbox_provision_seconds:p95_5m > 10
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "p95 sandbox provisioning is {{ $value | humanizeDuration }} (timeout is 20s)"
+            description: Check image pulls, node pressure and sandbox Pod events.
+
+        - alert: SandboxQuotaNearlyExhausted
+          expr: |
+            kube_resourcequota{namespace="sandboxes", resource="pods", type="used"}
+              / ignoring(type) kube_resourcequota{namespace="sandboxes", resource="pods", type="hard"} > 0.8
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "Sandbox pod quota is {{ $value | humanizePercentage }} used"
+            description: New sandboxes will be rejected soon. Check the reaper is running and the TTL / job rate.
+
+        - alert: ProducerDown
+          expr: absent(up{job="sandbox-orchestrator/producer"} == 1)
+          for: 1m
+          labels: { severity: critical }
+          annotations:
+            summary: No Producer is up
+
+        - alert: ConsumersDown
+          expr: absent(up{job="sandbox-orchestrator/consumer"} == 1)
+          for: 1m
+          labels: { severity: critical }
+          annotations:
+            summary: No Consumer is up
+
+        - alert: RedisDown
+          expr: absent(redis_up{namespace="sandbox-orchestrator"} == 1)
+          for: 1m
+          labels: { severity: critical }
+          annotations:
+            summary: Redis (the Job Queue) is down or not being scraped

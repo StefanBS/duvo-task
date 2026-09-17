@@ -26,3 +26,6 @@ SANDBOX_TTL_S = int(os.environ.get("SANDBOX_TTL_S", "120"))
 # Must stay below CLAIM_IDLE_MS, or a Job still provisioning gets reclaimed.
 SANDBOX_STARTUP_TIMEOUT_S = float(os.environ.get("SANDBOX_STARTUP_TIMEOUT_S", "20"))
 SANDBOX_REAP_INTERVAL_S = float(os.environ.get("SANDBOX_REAP_INTERVAL_S", "30"))
+
+METRICS_PORT = int(os.environ.get("METRICS_PORT", "9000"))
+ALERT_RECEIVER_LISTEN_PORT = int(os.environ.get("ALERT_RECEIVER_LISTEN_PORT", "8080"))

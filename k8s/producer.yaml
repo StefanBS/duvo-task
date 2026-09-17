@@ -15,11 +15,16 @@ spec:
       labels:
         app.kubernetes.io/name: producer
     spec:
+      # Avoid Service-link env vars (e.g. ALERT_RECEIVER_PORT=tcp://...) clashing with our config.
+      enableServiceLinks: false
       containers:
         - name: producer
           image: localhost/orchestrator:dev
           imagePullPolicy: Never
           command: ["producer"]
+          ports:
+            - name: metrics
+              containerPort: 9000
           envFrom:
             - configMapRef:
                 name: orchestrator-config

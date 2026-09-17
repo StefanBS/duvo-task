@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: alert-receiver
+  namespace: sandbox-orchestrator
+  labels:
+    app.kubernetes.io/name: alert-receiver
+spec:
+  selector:
+    app.kubernetes.io/name: alert-receiver
+  ports:
+    - name: http
+      port: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-receiver
+  namespace: sandbox-orchestrator
+  labels:
+    app.kubernetes.io/name: alert-receiver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alert-receiver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alert-receiver
+    spec:
+      # Avoid Service-link env vars (e.g. ALERT_RECEIVER_PORT=tcp://...) clashing with our config.
+      enableServiceLinks: false
+      containers:
+        - name: alert-receiver
+          image: localhost/orchestrator:dev
+          imagePullPolicy: Never
+          command: ["alert-receiver"]
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }

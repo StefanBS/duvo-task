@@ -28,6 +28,10 @@ _Avoid_: Endpoint, address, link
 The durable, ordered backlog of Jobs waiting to be picked up.
 _Avoid_: Stream, topic, bus
 
+**Job Backlog**:
+Jobs placed on the Job Queue that have not yet been completed: those not yet taken by any Consumer plus those taken but not yet acknowledged.
+_Avoid_: Queue depth, lag
+
 **Producer**:
 Anything that places Jobs onto the Job Queue.
 _Avoid_: Publisher, enqueuer

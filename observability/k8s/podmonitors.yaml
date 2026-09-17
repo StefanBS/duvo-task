@@ -1,0 +1,35 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: producer
+  namespace: sandbox-orchestrator
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: producer
+  podMetricsEndpoints:
+    - port: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: consumer
+  namespace: sandbox-orchestrator
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: consumer
+  podMetricsEndpoints:
+    - port: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: redis
+  namespace: sandbox-orchestrator
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  podMetricsEndpoints:
+    - port: metrics

@@ -1,0 +1,91 @@
+# Trimmed for a single-node k3d: no node-exporter, no control-plane scraping,
+# no default rules/dashboards. Our rules and dashboards live in observability/k8s.
+defaultRules:
+  create: false
+nodeExporter:
+  enabled: false
+kubeApiServer:
+  enabled: false
+kubelet:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false
+coreDns:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    retention: 24h
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    # Pick up PodMonitors/PrometheusRules from any namespace, not just this release's.
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { memory: 1Gi }
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 5Gi
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests: { cpu: 10m, memory: 32Mi }
+      limits: { memory: 128Mi }
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: alert-receiver
+      group_by: ["alertname"]
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+    receivers:
+      - name: "null" # referenced by the chart's default routes (e.g. Watchdog)
+      - name: alert-receiver
+        webhook_configs:
+          - url: http://alert-receiver.sandbox-orchestrator.svc.cluster.local:8080/alerts
+            send_resolved: true
+
+kube-state-metrics:
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { memory: 128Mi }
+
+prometheusOperator:
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { memory: 256Mi }
+
+grafana:
+  adminPassword: admin # Shortcut: static credentials, port-forward access only.
+  defaultDashboardsEnabled: false
+  resources:
+    requests: { cpu: 50m, memory: 256Mi }
+    limits: { memory: 512Mi }
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: monitoring
+  additionalDataSources:
+    - name: Loki
+      uid: loki
+      type: loki
+      url: http://loki.monitoring.svc.cluster.local:3100
+      access: proxy
