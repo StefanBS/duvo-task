@@ -1,0 +1,50 @@
+# Namespace where Sandboxes run, isolated from the control plane.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sandboxes
+---
+# Guardrail: the single k3d node caps at 110 pods. Creates beyond this are
+# rejected (403) and the Job fails visibly instead of starving the node.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: sandbox-quota
+  namespace: sandboxes
+spec:
+  hard:
+    pods: "50"
+    services: "50"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: consumer
+  namespace: sandbox-orchestrator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sandbox-manager
+  namespace: sandboxes
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: consumer-sandbox-manager
+  namespace: sandboxes
+subjects:
+  - kind: ServiceAccount
+    name: consumer
+    namespace: sandbox-orchestrator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sandbox-manager

@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: consumer
+  namespace: sandbox-orchestrator
   labels:
     app.kubernetes.io/name: consumer
 spec:
@@ -14,7 +15,8 @@ spec:
       labels:
         app.kubernetes.io/name: consumer
     spec:
-      # Longest simulated Job is 3s; leave room to finish and ack it on SIGTERM.
+      serviceAccountName: consumer
+      # Sandbox startup timeout is 20s; leave room to finish and ack on SIGTERM.
       terminationGracePeriodSeconds: 30
       containers:
         - name: consumer
@@ -26,4 +28,4 @@ spec:
                 name: orchestrator-config
           resources:
             requests: { cpu: 20m, memory: 32Mi }
-            limits: { memory: 128Mi }
+            limits: { memory: 256Mi }

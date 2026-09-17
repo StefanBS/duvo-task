@@ -1,9 +1,10 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: sandbox-orchestrator
+# No top-level `namespace:`; resources span sandbox-orchestrator and sandboxes.
 resources:
   - namespace.yaml
   - config.yaml
   - redis.yaml
   - producer.yaml
   - consumer.yaml
+  - sandboxes.yaml

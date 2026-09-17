@@ -31,8 +31,3 @@ def test_new_generates_unique_ids():
 def test_invalid_jobs_rejected(raw):
     with pytest.raises(InvalidJob):
         Job.from_json(raw)
-
-
-def test_all_job_types_have_valid_duration_ranges():
-    for low, high in JOB_TYPES.values():
-        assert 0 < low <= high

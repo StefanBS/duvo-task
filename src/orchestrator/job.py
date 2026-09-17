@@ -5,12 +5,8 @@ from dataclasses import dataclass
 
 from ulid import ULID
 
-# Job Type -> simulated work duration range in milliseconds.
-JOB_TYPES: dict[str, tuple[int, int]] = {
-    "http": (100, 500),
-    "browser": (1000, 3000),
-    "shell": (200, 1000),
-}
+# Shortcut: every Job Type currently gets the same HTTP Sandbox.
+JOB_TYPES: tuple[str, ...] = ("http", "browser", "shell")
 
 
 class InvalidJob(ValueError):

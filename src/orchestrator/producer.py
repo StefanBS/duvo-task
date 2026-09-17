@@ -19,7 +19,7 @@ def main() -> None:
     log.info("producer.started", extra={"stream": config.STREAM, "jobsPerSecond": config.JOBS_PER_SECOND})
 
     while not stop.is_set():
-        job = Job.new(random.choice(list(JOB_TYPES)))
+        job = Job.new(random.choice(JOB_TYPES))
         fields = {"jobId": job.job_id, "type": job.type}
         try:
             entry_id = r.xadd(

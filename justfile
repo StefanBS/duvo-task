@@ -18,6 +18,7 @@ build:
 # Build and load the image into the k3d cluster
 import: build
     mkdir -p .build
+    rm -f .build/image.tar
     podman save --format docker-archive -o .build/image.tar {{image}}
     # --mode direct: the default mode spawns a tools container that fails under Podman.
     k3d image import --mode direct -c {{cluster}} .build/image.tar
@@ -42,6 +43,25 @@ smoke:
 redis-cli *args:
     kubectl -n {{ns}} exec redis-0 -- redis-cli {{args}}
 
-# Tear everything down (including Redis data)
+# List Sandboxes and their state
+sandboxes:
+    kubectl -n sandboxes get pods,services -l app.kubernetes.io/name=sandbox -o wide
+
+# Fetch a Sandbox's URL from inside the cluster (defaults to the newest), e.g. `just curl /status/500`
+curl path="/" sandbox="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name="{{sandbox}}"
+    if [[ -z "$name" ]]; then
+      name=$(kubectl -n sandboxes get pods -l app.kubernetes.io/name=sandbox --field-selector=status.phase=Running \
+        --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
+    fi
+    url="http://$name.sandboxes.svc.cluster.local:9898{{path}}"
+    echo "GET $url" >&2
+    kubectl -n {{ns}} exec deploy/consumer -- python -c "import sys,urllib.request,urllib.error
+    try: r=urllib.request.urlopen(sys.argv[1], timeout=5); print(r.status); print(r.read().decode())
+    except urllib.error.HTTPError as e: print(e.code); print(e.read().decode())" "$url"
+
+# Tear everything down (including Redis data and Sandboxes)
 down:
-    kubectl delete namespace {{ns}} --ignore-not-found
+    kubectl delete namespace {{ns}} sandboxes --ignore-not-found

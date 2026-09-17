@@ -16,6 +16,14 @@ _Avoid_: Kind, category, runtime
 The isolated environment a Job runs in. Distinct from the Job: one Job may, over retries, be attempted in more than one Sandbox.
 _Avoid_: Container, pod, VM
 
+**Sandbox TTL**:
+The maximum lifetime of a Sandbox, after which the platform stops it regardless of what is running inside.
+_Avoid_: Timeout, expiry, deadline
+
+**Sandbox URL**:
+The address at which a ready Sandbox's HTTP server can be reached from inside the platform.
+_Avoid_: Endpoint, address, link
+
 **Job Queue**:
 The durable, ordered backlog of Jobs waiting to be picked up.
 _Avoid_: Stream, topic, bus
