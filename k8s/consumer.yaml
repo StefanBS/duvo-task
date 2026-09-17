@@ -1,12 +1,32 @@
-apiVersion: apps/v1
-kind: Deployment
+# A Rollout (Argo Rollouts) instead of a Deployment: new versions go out as a
+# canary. There is no traffic router for a queue, so the canary's share of Jobs
+# is its share of replicas competing in the same consumer group (see README).
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: consumer
   namespace: sandbox-orchestrator
   labels:
     app.kubernetes.io/name: consumer
 spec:
-  replicas: 2
+  replicas: 4 # granularity of the canary split: 1 replica = 25% of consumers
+  revisionHistoryLimit: 3
+  strategy:
+    canary:
+      # Pod labels by role, copied onto metrics by the PodMonitor as `track`.
+      canaryMetadata:
+        labels:
+          track: canary
+      stableMetadata:
+        labels:
+          track: stable
+      maxSurge: 1
+      maxUnavailable: 0
+      steps:
+        - setWeight: 25 # 1 of 4 consumers runs the new version
+        - pause: {} # manual gate: inspect dashboard, then `just promote` or `just abort`
+        - setWeight: 50
+        - pause: {}
   selector:
     matchLabels:
       app.kubernetes.io/name: consumer
@@ -18,7 +38,7 @@ spec:
       # Avoid Service-link env vars (e.g. ALERT_RECEIVER_PORT=tcp://...) clashing with our config.
       enableServiceLinks: false
       serviceAccountName: consumer
-      # Sandbox startup timeout is 20s; leave room to finish and ack on SIGTERM.
+      # Sandbox startup timeout is 10s; leave room to finish and ack on SIGTERM.
       terminationGracePeriodSeconds: 30
       containers:
         - name: consumer

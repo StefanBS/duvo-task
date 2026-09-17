@@ -79,6 +79,16 @@ spec:
           annotations:
             summary: No Consumer is up
 
+        - alert: RolloutAborted
+          # Scraped from the controller: the Rollout's namespace is `exported_namespace`.
+          # An aborted canary reports phase="Abort"; a failing one "Degraded" or "Error".
+          expr: max by (name) (rollout_info{exported_namespace="sandbox-orchestrator", phase=~"Abort|Degraded|Error"}) == 1
+          for: 15s
+          labels: { severity: warning }
+          annotations:
+            summary: "Rollout {{ $labels.name }} is degraded (canary aborted or failing)"
+            description: Stable version is serving all Jobs. Inspect with `just rollout`; fix and re-release, or `kubectl argo rollouts undo`.
+
         - alert: RedisDown
           expr: absent(redis_up{namespace="sandbox-orchestrator"} == 1)
           for: 1m

@@ -3,6 +3,8 @@
 import os
 import socket
 
+APP_VERSION = os.environ.get("APP_VERSION", "dev")
+
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 STREAM = os.environ.get("JOB_STREAM", "jobs")
 GROUP = os.environ.get("CONSUMER_GROUP", "consumers")

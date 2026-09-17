@@ -1,0 +1,16 @@
+controller:
+  replicas: 1 # Shortcut: no controller HA.
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { memory: 256Mi }
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+
+dashboard:
+  enabled: true
+  readonly: false # Shortcut: dashboard can promote/abort; reachable only via port-forward.
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { memory: 128Mi }

@@ -4,7 +4,7 @@
 set -euo pipefail
 
 NS="${NS:-sandbox-orchestrator}"
-TIMEOUT_S="${TIMEOUT_S:-60}"
+TIMEOUT_S="${TIMEOUT_S:-120}"
 MAX_PENDING="${MAX_PENDING:-10}"
 k() { kubectl -n "$NS" "$@"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -12,7 +12,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 echo "==> Waiting for workloads to be Ready"
 k rollout status statefulset/redis --timeout=60s
 k rollout status deployment/producer --timeout=60s
-k rollout status deployment/consumer --timeout=60s
+k wait --for=condition=Ready pod -l app.kubernetes.io/name=consumer --timeout=120s
+echo "==> Consumer rollout: $(kubectl argo rollouts -n "$NS" status consumer --timeout 1s 2>&1 | tail -1)"
 
 mapfile -t consumers < <(k get pods -l app.kubernetes.io/name=consumer -o json \
   | jq -r '.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name')

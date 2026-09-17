@@ -4,11 +4,12 @@ A lightweight sandbox orchestration platform, built step by step. Domain languag
 
 ## Quick start
 
-Requirements: a running k3d cluster (`k3s-default`), `podman`, `kubectl`, `helm`, `uv`, `just`, `jq`.
+Requirements: a running k3d cluster (`k3s-default`), `podman`, `kubectl`, the [`kubectl argo rollouts`](https://argoproj.github.io/argo-rollouts/installation/#kubectl-plugin-installation) plugin, `helm`, `uv`, `just`, `jq`.
 
 ```bash
 just test     # unit tests
-just deploy   # build image, import into k3d, apply manifests, restart workloads
+just rollouts-up  # Argo Rollouts controller + dashboard (the Consumer is a Rollout)
+just deploy   # build a versioned image, import into k3d, apply manifests (Consumer changes go out as a canary)
 just obs-up   # observability stack (after deploy: our PodMonitors/rules live in its namespace)
 just smoke    # end-to-end check
 just logs     # tail Consumer logs (just logs producer)
@@ -31,6 +32,7 @@ src/orchestrator/
   logging.py    JSON-lines structured logging
   config.py     env-var configuration
 k8s/            Kustomize manifests (namespaces sandbox-orchestrator, sandboxes)
+rollouts/       Argo Rollouts Helm values
 observability/  Helm values (kube-prometheus-stack, Loki, Alloy), PodMonitors,
                 alert rules, dashboard generator
 scripts/smoke.sh
@@ -221,3 +223,76 @@ sum by (event) (count_over_time({app="consumer"} | json [5m]))
 | No kubelet or cAdvisor metrics | No CPU or memory usage per sandbox | Turn on the kubelet ServiceMonitor |
 | No tracing | Latency inside a Job isn't broken down beyond its log timestamps | OpenTelemetry spans around create / wait-ready |
 | Our PodMonitors and rules live in `sandbox-orchestrator`, but are applied by `just obs-up` | `obs-up` fails if the app hasn't been deployed first | One chart or Kustomize overlay that owns the ordering |
+
+## Step 4 — A/B deployments of the Consumer
+
+```
+                         consumer group "consumers" on stream "jobs"
+Producer ──XADD──▶ jobs ─┬──▶ stable  consumer ×3   (track=stable, version A)
+                         └──▶ canary  consumer ×1   (track=canary, version B)   ← 25% step
+```
+
+```bash
+just canary        # build + import the current code as a new version → canary at 25%, paused
+just rollout       # watch steps, weights and ReplicaSets
+just promote       # 25% → 50% (paused) → 100%
+just promote-full  # skip the remaining steps
+just abort         # scale the canary down; stable takes all Jobs again
+just canary-bad    # release a known-bad config as a canary (its sandboxes can't pull their image)
+just canary-reset  # drop that override; the Rollout goes back to its stable spec
+just rollouts-ui   # Argo Rollouts dashboard on http://localhost:3100
+```
+
+**How a fraction of the queue reaches the new version.** The Consumer is an Argo Rollouts `Rollout` with a canary strategy and **no traffic router** ([ADR 0003](docs/adr/0003-canary-split-by-consumer-replicas.md)):
+- Stable and canary Consumers compete for Jobs in the *same* consumer group, so the canary's share of Jobs is roughly its share of replicas.
+- With 4 replicas the steps are `setWeight: 25` → pause → `setWeight: 50` → pause → 100%. Each step is a Pod count (1 of 4, then 2 of 4), with `maxSurge: 1` and `maxUnavailable: 0`, so capacity never drops during a release.
+- Every pause is a **manual gate**: look at the dashboard, then `just promote` or `just abort`. Automatic analysis is planned for step 5.
+
+**Telling canary from stable.**
+- **Track label:** `canaryMetadata` / `stableMetadata` put a `track: canary|stable` label on the Pods, and Argo updates it when a canary is promoted. The Consumer PodMonitor copies it, plus `rollouts-pod-template-hash` as `revision`, onto every Consumer metric.
+- **Version:** each image is stamped with a unique `APP_VERSION` (`<git sha>[-dirty]-<timestamp>`). It's exported as `orchestrator_build_info{version, role}` and added to every log line as `version`.
+- **Dashboard:** a new row, *Consumer rollout: canary vs stable*, shows Consumers by track and version, the **actual share of Jobs processed by track**, failure ratio by track and provisioning p95 by track. A stat panel shows the Rollout phase.
+- **Alert:** `RolloutAborted` fires when `rollout_info{phase=~"Abort|Degraded|Error"}` lasts 15s, so an aborted release reaches the alert receiver. The Argo Rollouts controller is scraped through its ServiceMonitor.
+
+**Rules for canary and stable running together.** Both versions share one Job Queue and one `sandboxes` namespace, so:
+- Job formats must work in both directions: the old version must read Jobs from the new one, and the new version must read Jobs from the old one.
+- A canary must not change sandbox naming, labels or cleanup in ways that break stable's sandboxes. Today every Consumer's cleanup deletes *any* stopped sandbox.
+- Judge a canary on **ratios**, not counts. A crashing or slow canary pulls *fewer* Jobs, so its share shrinks exactly when it's bad.
+
+### Verified
+
+- **Migration:** `just deploy` created the Rollout, which came up Healthy with 4 stable Pods on its first revision (the first revision skips canary steps), then deleted the old Deployment. `just smoke` passes on all 4 Consumers.
+- **Canary pause:** `just canary` produced exactly **1 canary Pod plus 3 stable Pods** (`track` labels set by the Rollout), paused at `SetWeight 25 / ActualWeight 25`.
+- **Metrics labels:** Prometheus scrapes all 4 Consumers with `track=stable|canary` and `revision=<pod-template-hash>`. `rollout_info{name="consumer",phase="Paused"}` is exported by the controller.
+- **Bug found and fixed:** the first canary image reported the *stable* version in `orchestrator_build_info`. Podman's layer cache ignored the changed `--build-arg APP_VERSION` used by `ENV`, so both tags were the same image. `just build` now stamps the version in a separate `FROM …:build / ENV APP_VERSION=<literal>` layer, and a local build confirms the correct version.
+- **Faster demo timings** (so a full canary can be observed in about 2 minutes):
+  - `JOBS_PER_SECOND` 0.2 → **1**
+  - `SANDBOX_TTL_S` 120 → **20**, so about 20 sandboxes are alive at once, well under the 50-pod quota
+  - `SANDBOX_STARTUP_TIMEOUT_S` 20 → **10**
+  - `SANDBOX_REAP_INTERVAL_S` 30 → **10**
+  - `RolloutAborted` `for:` 1m → 15s
+  - 4 Consumers at about 2.6s per Job handle roughly 1.5 Jobs/s.
+- **Canary share and abort run** (13:27–13:32 UTC). Jobs are counted per track from Consumer logs over 30s windows:
+
+  | Step | Pods | Jobs finished (30s) | Canary share |
+  |---|---|---|---|
+  | 25% | 1 canary / 3 stable | canary 7 completed, stable 23 | **23%** |
+  | 50% | 2 canary / 2 stable | canary 14 completed, stable 17 | **45%** |
+  | 100% (`promote-full`) | 4 stable (new version) | — | — |
+  | Bad canary, 25% | 1 canary / 3 stable | canary **2 failed**, stable 27 | **7%** |
+
+  - The good canary's share followed its replica share. The bad canary got only 7% of Jobs: each Job ties it up for the full 10s startup timeout, so it pulls fewer. That confirms canaries must be judged on ratios, not counts (ADR 0003).
+  - `just abort` brought the Rollout back to stable, and `just canary-reset` returned it to Healthy with 4 stable Pods.
+- **`RolloutAborted` did not fire:** the rule assumed `phase="Degraded"` and `namespace="sandbox-orchestrator"`. The controller actually exports `phase="Abort"`, and because its metrics are scraped from the controller Pod, the Rollout's namespace is in `exported_namespace`. The rule is fixed (`phase=~"Abort|Degraded|Error"`, `exported_namespace=…`) and applied, but it has **not yet been seen firing**.
+
+### Shortcuts & tradeoffs
+
+| Shortcut | Consequence | Would do instead |
+|---|---|---|
+| Traffic share = share of replicas | 25% steps only; the share is approximate and drops when the canary is slow or crashing | Producer-side split into a canary stream, with an exact percentage from Rollouts (ADR 0003) |
+| Manual promote/abort gates | Needs a person watching the dashboard | `AnalysisTemplate` on canary failure ratio and latency plus global backlog (step 5) |
+| Canary and stable share the sandbox cleanup | A buggy canary could delete stable's sandboxes | Label sandboxes with the creating `track`/`revision` and reap only your own |
+| `canary-bad` patches the live Rollout | `just apply` won't remove that override; `just canary-reset` must | Bad configs as a proper overlay or release, not a live patch |
+| `just deploy` gives each build a new version | Every deploy starts a canary, even when the Consumer code didn't change | Tag by content hash so unchanged code isn't released again |
+| Argo Rollouts controller runs as 1 replica; dashboard can make changes | If the controller is down, rollouts don't progress; anyone with port-forward access can promote/abort | HA controller with leader election; a read-only dashboard behind SSO |
+| Converting the Consumer deletes the old Deployment right after applying the Rollout | Both run together for a moment (no drop in capacity), then the old Pods stop gracefully | Rollout `workloadRef` for a zero-surprise migration |

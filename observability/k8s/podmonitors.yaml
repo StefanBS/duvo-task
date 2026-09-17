@@ -21,6 +21,12 @@ spec:
       app.kubernetes.io/name: consumer
   podMetricsEndpoints:
     - port: metrics
+      relabelings:
+        # Set by the Rollout's canaryMetadata/stableMetadata: canary | stable.
+        - sourceLabels: [__meta_kubernetes_pod_label_track]
+          targetLabel: track
+        - sourceLabels: [__meta_kubernetes_pod_label_rollouts_pod_template_hash]
+          targetLabel: revision
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor

@@ -78,8 +78,11 @@ add(
     stat("Sandbox quota used", 'kube_resourcequota{namespace="sandboxes",resource="pods",type="used"} '
          '/ ignoring(type) kube_resourcequota{namespace="sandboxes",resource="pods",type="hard"}',
          16, 4, "percentunit", [(0.6, "orange"), (0.8, "red")]),
-    stat("Firing alerts", 'count(ALERTS{alertstate="firing"}) or vector(0)', 20, 4,
+    stat("Firing alerts", 'count(ALERTS{alertstate="firing"}) or vector(0)', 20, 2,
          thresholds=[(1, "red")]),
+    {**stat("Consumer rollout", 'max by (phase) (rollout_info{name="consumer"})', 22, 2),
+     "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "textMode": "name", "colorMode": "none",
+                 "graphMode": "none"}},
     h=4,
 )
 
@@ -116,6 +119,23 @@ add(
         ('count(up{job="sandbox-orchestrator/consumer"} == 1) or vector(0)', "consumers up"),
         ("sum(increase(orchestrator_jobs_reclaimed_total[5m]))", "reclaimed (5m)"),
         ("sum(increase(orchestrator_redis_errors_total[5m]))", "redis errors (5m)")], 16, 8),
+    h=7,
+)
+
+row("Consumer rollout: canary vs stable")
+add(
+    ts("Consumers by track / version",
+       [('count by (track, version) (orchestrator_build_info{role="consumer"})', "{{track}} {{version}}")],
+       0, 6, stack=True, desc="Pod labels set by the Rollout; canary share of Jobs follows canary share of replicas"),
+    ts("Share of Jobs processed by track",
+       [("sum by (track) (rate(orchestrator_jobs_processed_total[5m])) / scalar(sum(rate(orchestrator_jobs_processed_total[5m])))",
+         "{{track}}")], 6, 6, "percentunit", stack=True),
+    ts("Job failure ratio by track",
+       [('sum by (track) (rate(orchestrator_jobs_processed_total{outcome=~"failed|invalid"}[5m])) '
+         "/ sum by (track) (rate(orchestrator_jobs_processed_total[5m]))", "{{track}}")], 12, 6, "percentunit"),
+    ts("Provisioning p95 by track",
+       [('histogram_quantile(0.95, sum by (track, le) (rate(orchestrator_sandbox_provision_duration_seconds_bucket{outcome="ready"}[5m])))',
+         "{{track}}")], 18, 6, "s"),
     h=7,
 )
 

@@ -1,9 +1,11 @@
 """Prometheus metrics. Labels stay low-cardinality: never jobId or Sandbox name."""
 
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
+from prometheus_client import Counter, Gauge, Histogram, Info, start_http_server
 
 from orchestrator import config
 from orchestrator.job import JOB_TYPES
+
+BUILD_INFO = Info("orchestrator_build", "Running application version")
 
 JOBS_ENQUEUED = Counter("orchestrator_jobs_enqueued_total", "Jobs placed on the Job Queue", ["type"])
 ENQUEUE_FAILURES = Counter("orchestrator_job_enqueue_failures_total", "Jobs the Producer failed to enqueue")
@@ -29,6 +31,7 @@ REDIS_ERRORS = Counter("orchestrator_redis_errors_total", "Redis errors in the C
 def serve(role: str) -> None:
     """Expose /metrics, pre-creating this role's labelled series at zero so rate()/ratio
     queries and alerts see them before the first event."""
+    BUILD_INFO.info({"version": config.APP_VERSION, "role": role})
     for job_type in JOB_TYPES:
         if role == "producer":
             JOBS_ENQUEUED.labels(job_type)

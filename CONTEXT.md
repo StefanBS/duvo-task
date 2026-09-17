@@ -39,3 +39,15 @@ _Avoid_: Publisher, enqueuer
 **Consumer**:
 A worker that takes Jobs off the Job Queue, performs them, and acknowledges them once done.
 _Avoid_: Worker, handler, subscriber
+
+**Consumer Release**:
+A new version of the Consumer being introduced alongside the current one, receiving a fraction of the Job Queue before it replaces it.
+_Avoid_: Deployment, rollout, upgrade
+
+**Canary**:
+The Consumers running the version under test during a Consumer Release.
+_Avoid_: B, new, candidate
+
+**Stable**:
+The Consumers running the last fully released version; they take every Job the Canary does not.
+_Avoid_: A, old, baseline, production

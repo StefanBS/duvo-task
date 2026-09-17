@@ -5,6 +5,8 @@ import logging
 import sys
 from datetime import UTC, datetime
 
+from orchestrator import config
+
 _RESERVED = set(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) | {
     "message",
     "asctime",
@@ -31,7 +33,7 @@ class JsonFormatter(logging.Formatter):
 
 def setup(service: str, instance: str) -> logging.Logger:
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JsonFormatter({"service": service, "instance": instance}))
+    handler.setFormatter(JsonFormatter({"service": service, "instance": instance, "version": config.APP_VERSION}))
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(logging.INFO)
