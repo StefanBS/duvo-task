@@ -2,21 +2,85 @@
 
 A lightweight sandbox orchestration platform, built step by step. Domain language lives in [CONTEXT.md](CONTEXT.md); hard-to-reverse decisions in [docs/adr](docs/adr).
 
+## About this submission
+
+- **Five steps**, each in its own section below: job queue → a Sandbox per Job → observability → canary releases → automated cutover. Each section explains what was built and how it was verified, and lists the shortcuts and tradeoffs taken.
+- **Timebox:** Step 3 was finished at about the 1-hour mark (commit `8447689`). Steps 4 and 5 came after it. See [Personal notes](#personal-notes).
+- **After the timebox**, one extra commit made the project easier to review: a single deploy path (`just cluster-up` + `just up`), clearer recipe names and more README guidance. It doesn't change the application code. Older step commits use the previous recipe names and don't have `just up`.
+- **Where to start:** [Quick start](#quick-start) to deploy, then [Suggested review scenarios](#4-suggested-review-scenarios) to see alerts, a canary that aborts itself and a canary that cuts over on its own.
+
+### Known issues
+
+- **Consumer outage → failed Jobs on recovery:** when Consumers come back they drain the backlog as fast as they can, hit the 50-pod Sandbox quota, and fail those Jobs instead of backing off ([Step 3, Verified](#verified-2)).
+- **At-least-once, with no retry limit, dead-letter queue or deduplication:** a reclaimed Job can run twice, and a Job that crashes its Consumer is reclaimed forever ([Step 1 tradeoffs](#shortcuts--tradeoffs)).
+- **No NetworkPolicy:** Sandboxes can reach each other and Redis ([Step 2 tradeoffs](#shortcuts--tradeoffs-1)).
+
 ## Quick start
 
-Requirements: a running k3d cluster (`k3s-default`), `podman`, `kubectl`, the [`kubectl argo rollouts`](https://argoproj.github.io/argo-rollouts/installation/#kubectl-plugin-installation) plugin, `helm`, `uv`, `just`, `jq`.
+### 1. Prerequisites
+
+`k3d`, `kubectl`, the [`kubectl argo rollouts`](https://argoproj.github.io/argo-rollouts/installation/#kubectl-plugin-installation) plugin, `helm`, `uv`, `just`, `jq`, `git`, and `podman` or `docker`. Give the container runtime about 4 CPUs and 6 GB of RAM: the monitoring stack, 4 Consumers and about 20 Sandboxes run on one node.
 
 ```bash
-just test     # unit tests
-just rollouts-up  # Argo Rollouts controller + dashboard (the Consumer is a Rollout)
-just deploy   # build a versioned image, import into k3d, apply manifests (Consumer changes go out as a canary)
-just obs-up   # observability stack (after deploy: our PodMonitors/rules live in its namespace)
-just smoke    # end-to-end check
-just logs     # tail Consumer logs (just logs producer)
-just sandboxes            # list Sandbox pods/services
-just curl /status/500     # hit the newest Sandbox from inside the cluster (mock errors)
+just doctor        # checks the tools above and that a cluster is reachable (not the deployment)
+```
+
+The recipes default to **Podman**. With Docker, prefix every command with `CONTAINER_CLI=docker` (or export it). On rootless Podman, `just cluster-up` sets the socket and kubelet options k3d needs ([k3d's Podman guide](https://k3d.io/stable/usage/advanced/podman/)).
+
+### 2. Deploy (fresh cluster, about 5–10 minutes)
+
+A full deployment is **two commands**. `just up` deploys everything, but it doesn't create the cluster:
+
+```bash
+just cluster-up    # 1. create the k3d cluster "k3s-default" (skip if you already have one)
+just up            # 2. full deployment of everything else onto the current kubectl context
+just smoke         # check it end to end; prints PASS
+```
+
+| Command | What it does | When to run it |
+|---|---|---|
+| `just cluster-up` | Creates a single-node k3d cluster and switches kubectl to it. On rootless Podman it also sets the socket and kubelet options k3d needs. It fails if the cluster already exists. | Once, on a machine with no cluster |
+| `just up` | Runs, in order: `helm-repos` → `obs-up` (Prometheus, Alertmanager, Grafana, Loki, Alloy) → `rollouts-up` (Argo Rollouts) → `deploy` (build the image, import it into k3d, apply the app manifests) → `obs-apply` (our PodMonitors, alert rules and dashboard) | After `cluster-up`, or on any existing k3d cluster named `k3s-default` |
+
+They are separate so that `just up` also works on a cluster you already have. The image import targets k3d, so the cluster must be a k3d cluster named `k3s-default` (or override it with `just cluster=<name> up`).
+
+`just up` runs the steps in that order because each one needs the one before it. Argo Rollouts' ServiceMonitor needs the monitoring CRDs, the app's Consumer is a `Rollout`, and our PodMonitors live in the app's namespace. Running it again is safe, but see the note on redeploys below.
+
+### 3. Look around
+
+`grafana`, `rollouts-ui`, `prometheus` and `alertmanager` are port-forwards: they keep running until you press Ctrl-C, so run each one in its own terminal.
+
+```bash
+just grafana       # http://localhost:3000 (admin/admin) → dashboard "Sandbox Orchestrator — Overview"
+just rollouts-ui   # http://localhost:3100, the Consumer Rollout
+just prometheus    # http://localhost:9090
+just logs          # tail Consumer logs (just logs producer)
+just sandboxes     # list Sandbox pods/services
+just curl /status/500          # hit the newest Sandbox from inside the cluster (mock errors)
 just redis-cli XINFO GROUPS jobs
-just down     # delete the namespace (including Redis data)
+just test          # unit tests (no cluster needed; uv downloads Python 3.14 if missing)
+```
+
+### 4. Suggested review scenarios
+
+Run `just smoke` **before** these, then run the scenarios one at a time, in this order, with Grafana open. The timings were measured on a fresh `just up` deployment. Afterwards `just smoke` may report a few failed Jobs: it counts every failure in the current Consumers' logs, and the scenarios cause some on purpose. The good canary's cutover also caused 2 Sandbox startup timeouts on the busy single node.
+
+| Scenario | Command | What to expect | Undo |
+|---|---|---|---|
+| Consumer outage (step 3) | `just chaos-consumers-down` | Alerts reach `just alerts` in this order: `ConsumersDown` after about 1m40s, `JobBacklogGrowing` after about 2m45s, `JobsNotCompleting` after about 5m15s. By then about 300 Jobs are waiting. | `just chaos-reset`. `ConsumersDown` and `JobsNotCompleting` resolve within about 1 min, and the backlog drains in about 7–8 min. **Expect `JobFailureRatioHigh` about 9 min after the reset**: the drain hits the Sandbox quota and Jobs fail with `403 exceeded quota` (see [Known issues](#known-issues)). |
+| Bad canary, automatic abort (steps 4–5) | `just canary-bad` then `just canary-watch` | 1 canary of 4 Consumers. The analysis fails and the Rollout **aborts itself after about 75s** (Degraded). `RolloutAborted` reaches `just alerts` after about 1m45s. | `just canary-reset`: Healthy again within seconds |
+| Good canary, automatic cutover (steps 4–5) | `just canary` then `just canary-watch` | About 45s to build and import the image. Then 25% → analysis → 50% → analysis → 100%, **Healthy about 2.5 min after release**, with no human action. | none needed |
+
+`just canary` builds and releases the current code as a new version, so you don't need to change any code first. `just canary-promote`, `just canary-promote-full` and `just canary-abort` are manual overrides.
+
+**Note on redeploys:** every image gets a unique version, so each `just deploy` or `just up` after the first starts a Consumer canary. `just smoke` may show a rollout in progress until the analysis promotes it.
+
+### 5. Tear down
+
+```bash
+just cluster-down  # delete the whole k3d cluster
+just down          # or: remove everything `just up` installed, keeping the cluster
+just undeploy      # or: remove only the app (namespaces sandbox-orchestrator and sandboxes, including Redis data)
 ```
 
 ## Layout
@@ -31,11 +95,16 @@ src/orchestrator/
   alert_receiver.py  Alertmanager webhook target that logs alerts
   logging.py    JSON-lines structured logging
   config.py     env-var configuration
-k8s/            Kustomize manifests (namespaces sandbox-orchestrator, sandboxes)
+tests/          unit tests (just test)
+k8s/            Kustomize manifests (namespaces sandbox-orchestrator, sandboxes),
+                Consumer Rollout and canary AnalysisTemplate
 rollouts/       Argo Rollouts Helm values
 observability/  Helm values (kube-prometheus-stack, Loki, Alloy), PodMonitors,
                 alert rules, dashboard generator
-scripts/smoke.sh
+scripts/smoke.sh  end-to-end check (just smoke)
+docs/adr/       architecture decision records
+CONTEXT.md      domain language (Job, Sandbox, Job Queue, …)
+justfile        every command in this README (run `just` to list them)
 ```
 
 ## Step 1 — The basics: a Job Queue
@@ -136,7 +205,8 @@ kube-state-metrics ─────┘        │                                
 ```
 
 ```bash
-just obs-up          # helm install kube-prometheus-stack, loki, alloy + our monitors/rules/dashboard
+just obs-up          # helm install kube-prometheus-stack, loki, alloy (part of `just up`)
+just obs-apply       # our PodMonitors, alert rules and dashboard (part of `just up`)
 just grafana         # http://localhost:3000 (admin/admin) → "Sandbox Orchestrator — Overview"
 just prometheus      # http://localhost:9090
 just alertmanager    # http://localhost:9093
@@ -222,7 +292,7 @@ sum by (event) (count_over_time({app="consumer"} | json [5m]))
 | No logs collected from `monitoring` / `kube-system` | The monitoring stack can't be debugged from Loki | Collect them, with a shorter retention |
 | No kubelet or cAdvisor metrics | No CPU or memory usage per sandbox | Turn on the kubelet ServiceMonitor |
 | No tracing | Latency inside a Job isn't broken down beyond its log timestamps | OpenTelemetry spans around create / wait-ready |
-| Our PodMonitors and rules live in `sandbox-orchestrator`, but are applied by `just obs-up` | `obs-up` fails if the app hasn't been deployed first | One chart or Kustomize overlay that owns the ordering |
+| Install order is encoded in `just up` (monitoring CRDs → Argo Rollouts → app → our PodMonitors/rules) | Running the individual recipes out of order fails (e.g. `rollouts-up` before `obs-up`) | One chart, Kustomize overlay or GitOps app-of-apps that owns the ordering |
 
 ## Step 4 — A/B deployments of the Consumer
 
@@ -232,21 +302,23 @@ Producer ──XADD──▶ jobs ─┬──▶ stable  consumer ×3   (track=
                          └──▶ canary  consumer ×1   (track=canary, version B)   ← 25% step
 ```
 
+> **Since step 5**, the manual pauses below are analysis steps: `just canary` promotes or aborts on its own, and `canary-promote` / `canary-abort` are only overrides.
+
 ```bash
-just canary        # build + import the current code as a new version → canary at 25%, paused
-just rollout       # watch steps, weights and ReplicaSets
-just promote       # 25% → 50% (paused) → 100%
-just promote-full  # skip the remaining steps
-just abort         # scale the canary down; stable takes all Jobs again
-just canary-bad    # release a known-bad config as a canary (its sandboxes can't pull their image)
-just canary-reset  # drop that override; the Rollout goes back to its stable spec
-just rollouts-ui   # Argo Rollouts dashboard on http://localhost:3100
+just canary              # build + import the current code as a new version → canary at 25%
+just canary-watch        # watch steps, weights and ReplicaSets
+just canary-promote      # advance to the next step: 25% → 50% → 100%
+just canary-promote-full # skip the remaining steps
+just canary-abort        # scale the canary down; stable takes all Jobs again
+just canary-bad          # release a known-bad config as a canary (its sandboxes can't pull their image)
+just canary-reset        # drop that override; the Rollout goes back to its stable spec
+just rollouts-ui         # Argo Rollouts dashboard on http://localhost:3100
 ```
 
 **How a fraction of the queue reaches the new version.** The Consumer is an Argo Rollouts `Rollout` with a canary strategy and **no traffic router** ([ADR 0003](docs/adr/0003-canary-split-by-consumer-replicas.md)):
 - Stable and canary Consumers compete for Jobs in the *same* consumer group, so the canary's share of Jobs is roughly its share of replicas.
 - With 4 replicas the steps are `setWeight: 25` → pause → `setWeight: 50` → pause → 100%. Each step is a Pod count (1 of 4, then 2 of 4), with `maxSurge: 1` and `maxUnavailable: 0`, so capacity never drops during a release.
-- Every pause is a **manual gate**: look at the dashboard, then `just promote` or `just abort`. Automatic analysis is planned for step 5.
+- Every pause is a **manual gate**: look at the dashboard, then `just canary-promote` or `just canary-abort`. Automatic analysis is planned for step 5.
 
 **Telling canary from stable.**
 - **Track label:** `canaryMetadata` / `stableMetadata` put a `track: canary|stable` label on the Pods, and Argo updates it when a canary is promoted. The Consumer PodMonitor copies it, plus `rollouts-pod-template-hash` as `revision`, onto every Consumer metric.
@@ -282,7 +354,7 @@ just rollouts-ui   # Argo Rollouts dashboard on http://localhost:3100
   | Bad canary, 25% | 1 canary / 3 stable | canary **2 failed**, stable 27 | **7%** |
 
   - The good canary's share followed its replica share. The bad canary got only 7% of Jobs: each Job ties it up for the full 10s startup timeout, so it pulls fewer. That confirms canaries must be judged on ratios, not counts (ADR 0003).
-  - `just abort` brought the Rollout back to stable, and `just canary-reset` returned it to Healthy with 4 stable Pods.
+  - `just canary-abort` brought the Rollout back to stable, and `just canary-reset` returned it to Healthy with 4 stable Pods.
 - **`RolloutAborted` did not fire:** the rule assumed `phase="Degraded"` and `namespace="sandbox-orchestrator"`. The controller actually exports `phase="Abort"`, and because its metrics are scraped from the controller Pod, the Rollout's namespace is in `exported_namespace`. The rule is fixed (`phase=~"Abort|Degraded|Error"`, `exported_namespace=…`) and applied, but it has **not yet been seen firing**.
 
 ### Shortcuts & tradeoffs
@@ -322,7 +394,7 @@ Why these choices:
 - **Minimum 3 failures:** a bad canary pulls few Jobs (7% at a 25% step in step 4), so it can still **fail fast** without having enough samples to *pass*.
 - **Inconclusive pauses instead of aborting:** a paused canary is still limited to its current small share.
 
-Human overrides still work: `just promote-full`, `just abort`. `just canary` now releases and cuts over on its own.
+Human overrides still work: `just canary-promote-full`, `just canary-abort`. `just canary` now releases and cuts over on its own.
 
 ### Verified
 
@@ -364,6 +436,12 @@ Human overrides still work: `just promote-full`, `just abort`. `just canary` now
 ## Personal notes
 
 - **Timebox:** I finished and committed Step 3 at around the 1-hour mark (commit `8447689`). If you want to be strict about the timebox, you can evaluate up to that point. I kept recording and finished Steps 4 and 5 anyway; the full video is 01:44:00. That time includes all the testing between steps, which took a while.
+- **Reviewer setup (after the recording):** the last commit only makes the project easier to deploy and review. It isn't part of the timed work, and it doesn't touch the application code. Starting from a fresh cluster, I found and fixed these problems:
+  - The install order was circular: Argo Rollouts needed the monitoring CRDs, which were installed after the app. `just up` now runs everything in the right order.
+  - The Helm repos weren't added anywhere.
+  - k3d on rootless Podman needed extra options.
+
+  I also renamed recipes for consistency (e.g. `abort` → `canary-abort`, `down` → `undeploy`), added `doctor`, `cluster-up` and `CONTAINER_CLI=docker` support, and re-ran the review scenarios to update their timings.
 - **Testing:** I didn't have time to test everything manually. I did check the dashboards and the canary deployments in Kubernetes myself, and everything seemed to work. The rest was checked through the scripted runs recorded in the "Verified" sections above.
 - **Python typing:** I would have added a typing library to the Python application, with static type checking.
 - **CI/CD:** there's no CI/CD pipeline. I would have added:

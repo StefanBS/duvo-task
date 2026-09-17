@@ -100,7 +100,7 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: "Rollout {{ $labels.name }} is degraded (canary aborted or failing)"
-            description: Stable version is serving all Jobs. Inspect with `just rollout`; fix and re-release, or `kubectl argo rollouts undo`.
+            description: Stable version is serving all Jobs. Inspect with `just canary-watch`; fix and re-release, or `kubectl argo rollouts undo`.
 
         - alert: RolloutPaused
           expr: max by (name) (rollout_info{exported_namespace="sandbox-orchestrator", phase="Paused"}) == 1
@@ -108,7 +108,7 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: "Rollout {{ $labels.name }} has been paused for 2m (canary analysis inconclusive?)"
-            description: Not enough signal to cut over automatically. Inspect with `just rollout`, then `just promote-full` or `just abort`.
+            description: Not enough signal to cut over automatically. Inspect with `just canary-watch`, then `just canary-promote-full` or `just canary-abort`.
 
         - alert: RedisDown
           expr: absent(redis_up{namespace="sandbox-orchestrator"} == 1)
