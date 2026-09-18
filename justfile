@@ -274,5 +274,5 @@ chaos-bad-image: canary-bad canary-promote-full
 # Undo all chaos
 [group('chaos')]
 chaos-reset: canary-reset
-    kubectl -n {{ns}} scale rollout/consumer --replicas=4
+    kubectl -n {{ns}} scale rollout/consumer --replicas=2
     kubectl argo rollouts -n {{ns}} promote consumer --full || true

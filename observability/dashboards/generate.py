@@ -80,7 +80,12 @@ add(
          16, 4, "percentunit", [(0.6, "orange"), (0.8, "red")]),
     stat("Firing alerts", 'count(ALERTS{alertstate="firing"}) or vector(0)', 20, 2,
          thresholds=[(1, "red")]),
-    {**stat("Consumer rollout", 'max by (phase) (rollout_info{name="consumer"})', 22, 2),
+    {**stat("Consumer rollout", 'max by (phase) (rollout_info{name="consumer"})', 22, 2,
+            desc="Current phase reported by the Argo Rollouts controller"),
+     # Instant query: a range query would keep a series per phase seen in the window, and the
+     # panel would show them all. The legend supplies the phase name that textMode=name renders.
+     "targets": [{**t, "instant": True, "legendFormat": "{{phase}}"}
+                 for t in targets(('max by (phase) (rollout_info{name="consumer"})', "{{phase}}"))],
      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "textMode": "name", "colorMode": "none",
                  "graphMode": "none"}},
     h=4,

@@ -74,9 +74,22 @@ prometheusOperator:
 grafana:
   adminPassword: admin # Shortcut: static credentials, port-forward access only.
   defaultDashboardsEnabled: false
+  # Grafana 13 needs ~600Mi resident: ~220Mi of heap plus ~385Mi of its own mapped binary.
+  # At a 512Mi limit the kernel kept evicting and re-reading those pages (~400 MB/s of disk reads),
+  # which stalled Grafana and the whole host. GOMEMLIMIT makes the Go GC work well before the
+  # cgroup limit, so heap (≤400Mi) + binary always fit under 1Gi.
+  env:
+    GOMEMLIMIT: 400MiB
   resources:
-    requests: { cpu: 50m, memory: 256Mi }
-    limits: { memory: 512Mi }
+    requests: { cpu: 50m, memory: 640Mi }
+    limits: { memory: 1Gi }
+  # Features this project doesn't use: alerting goes through Prometheus + Alertmanager,
+  # and there's no need for plugin downloads, update checks or the news feed.
+  grafana.ini:
+    unified_alerting: { enabled: false }
+    plugins: { preinstall_disabled: true }
+    analytics: { reporting_enabled: false, check_for_updates: false, check_for_plugin_updates: false, feedback_links_enabled: false }
+    news: { news_feed_enabled: false }
   sidecar:
     dashboards:
       enabled: true

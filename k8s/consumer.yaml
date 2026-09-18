@@ -9,7 +9,7 @@ metadata:
   labels:
     app.kubernetes.io/name: consumer
 spec:
-  replicas: 4 # granularity of the canary split: 1 replica = 25% of consumers
+  replicas: 2 # granularity of the canary split: 1 replica = 50% of consumers
   revisionHistoryLimit: 3
   strategy:
     canary:
@@ -25,8 +25,8 @@ spec:
       # Automated cutover: each step must pass the metric-based health gate
       # (k8s/analysis.yaml). No manual pauses; `just canary-promote-full` / `just canary-abort` override.
       steps:
-        - setWeight: 25 # 1 of 4 consumers runs the new version
-        - analysis: &canary-health
+        - setWeight: 50 # 1 of 2 consumers runs the new version
+        - analysis:
             templates:
               - templateName: consumer-canary-health
             args:
@@ -36,8 +36,6 @@ spec:
               - name: stable-hash
                 valueFrom:
                   podTemplateHashValue: Stable
-        - setWeight: 50
-        - analysis: *canary-health
   selector:
     matchLabels:
       app.kubernetes.io/name: consumer

@@ -22,7 +22,7 @@ spec:
       count: 3
       inconclusiveLimit: 2
       consecutiveErrorLimit: 2
-      successCondition: result[0] >= 8
+      successCondition: result[0] >= 5 # ~12 Jobs/min reach the canary at 50%; ~8/min while the old Pods drain
       failureCondition: "false" # too few samples is inconclusive, never a failure on its own
       provider:
         prometheus:

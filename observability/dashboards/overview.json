@@ -397,7 +397,7 @@
     {
       "type": "stat",
       "title": "Consumer rollout",
-      "description": "",
+      "description": "Current phase reported by the Argo Rollouts controller",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -409,8 +409,9 @@
             "uid": "prometheus"
           },
           "expr": "max by (phase) (rollout_info{name=\"consumer\"})",
-          "legendFormat": "",
-          "refId": "A"
+          "legendFormat": "{{phase}}",
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {

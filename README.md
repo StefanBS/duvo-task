@@ -11,7 +11,7 @@ A lightweight sandbox orchestration platform, built step by step. Domain languag
 
 ### Known issues
 
-- **Consumer outage → failed Jobs on recovery:** when Consumers come back they drain the backlog as fast as they can, hit the 50-pod Sandbox quota, and fail those Jobs instead of backing off ([Step 3, Verified](#verified-2)).
+- **Consumer outage → failed Jobs on recovery:** when Consumers come back they drain the backlog as fast as they can, and if that hits the 50-pod Sandbox quota they fail those Jobs instead of backing off. A `403` fails instantly, so one Consumer can burn through ~100 queued Jobs in seconds ([Step 3, Verified](#verified-2)). At the current defaults the drain stays well under the quota, so this needs a higher `JOBS_PER_SECOND` or more replicas to reproduce.
 - **At-least-once, with no retry limit, dead-letter queue or deduplication:** a reclaimed Job can run twice, and a Job that crashes its Consumer is reclaimed forever ([Step 1 tradeoffs](#shortcuts--tradeoffs)).
 - **No NetworkPolicy:** Sandboxes can reach each other and Redis ([Step 2 tradeoffs](#shortcuts--tradeoffs-1)).
 
@@ -19,7 +19,7 @@ A lightweight sandbox orchestration platform, built step by step. Domain languag
 
 ### 1. Prerequisites
 
-`k3d`, `kubectl`, the [`kubectl argo rollouts`](https://argoproj.github.io/argo-rollouts/installation/#kubectl-plugin-installation) plugin, `helm`, `uv`, `just`, `jq`, `git`, and `podman` or `docker`. Give the container runtime about 4 CPUs and 6 GB of RAM: the monitoring stack, 4 Consumers and about 20 Sandboxes run on one node.
+`k3d`, `kubectl`, the [`kubectl argo rollouts`](https://argoproj.github.io/argo-rollouts/installation/#kubectl-plugin-installation) plugin, `helm`, `uv`, `just`, `jq`, `git`, and `podman` or `docker`. Give the container runtime about 4 CPUs and 4 GB of RAM. The monitoring stack is the largest part; the app itself runs 2 Consumers and about 10 short-lived Sandboxes at a time.
 
 ```bash
 just doctor        # checks the tools above and that a cluster is reachable (not the deployment)
@@ -67,11 +67,13 @@ Run `just smoke` **before** these, then run the scenarios one at a time, in this
 
 | Scenario | Command | What to expect | Undo |
 |---|---|---|---|
-| Consumer outage (step 3) | `just chaos-consumers-down` | Alerts reach `just alerts` in this order: `ConsumersDown` after about 1m40s, `JobBacklogGrowing` after about 2m45s, `JobsNotCompleting` after about 5m15s. By then about 300 Jobs are waiting. | `just chaos-reset`. `ConsumersDown` and `JobsNotCompleting` resolve within about 1 min, and the backlog drains in about 7–8 min. **Expect `JobFailureRatioHigh` about 9 min after the reset**: the drain hits the Sandbox quota and Jobs fail with `403 exceeded quota` (see [Known issues](#known-issues)). |
-| Bad canary, automatic abort (steps 4–5) | `just canary-bad` then `just canary-watch` | 1 canary of 4 Consumers. The analysis fails and the Rollout **aborts itself after about 75s** (Degraded). `RolloutAborted` reaches `just alerts` after about 1m45s. | `just canary-reset`: Healthy again within seconds |
-| Good canary, automatic cutover (steps 4–5) | `just canary` then `just canary-watch` | About 45s to build and import the image. Then 25% → analysis → 50% → analysis → 100%, **Healthy about 2.5 min after release**, with no human action. | none needed |
+| Consumer outage (step 3) | `just chaos-consumers-down` | Alerts reach `just alerts` in this order: `ConsumersDown` after about 1m45s, `JobBacklogGrowing` after about 3m20s, `JobsNotCompleting` after about 5m. By then about 120 Jobs are waiting. | `just chaos-reset`. `ConsumersDown` and `JobsNotCompleting` resolve within about 1 min, and the backlog drains in about 6 min. At these defaults the drain stays under the Sandbox quota, so no Jobs fail; with more replicas or a higher rate it hits the quota (see [Known issues](#known-issues)). |
+| Bad canary, automatic abort (steps 4–5) | `just canary-bad` then `just canary-watch` | 1 canary of 2 Consumers. The analysis fails and the Rollout **aborts itself after about 55s** (Degraded). `RolloutAborted` reaches `just alerts` about a minute later. | `just canary-reset`: Healthy again within seconds |
+| Good canary, automatic cutover (steps 4–5) | `just canary` then `just canary-watch` | About 30s to build and import the image. Then 50% → analysis → 100%, **Healthy about 80s after release**, with no human action. | none needed |
 
 `just canary` builds and releases the current code as a new version, so you don't need to change any code first. `just canary-promote`, `just canary-promote-full` and `just canary-abort` are manual overrides.
+
+**Scale of the default deployment.** To keep a laptop responsive, the defaults are **2 Consumers** and **0.4 Jobs/s** (`k8s/config.yaml`), which keeps about 10 Sandboxes alive and provisions them in about 2.5s (p95 about 4.5s). One replica is therefore 50% of the Consumers, so a canary is a single 50% step. The recorded runs in steps 4 and 5 used the earlier defaults of 4 Consumers at 1 Job/s, with 25% and 50% steps. To push harder, raise `JOBS_PER_SECOND` and `spec.replicas` in `k8s/consumer.yaml`.
 
 **Note on redeploys:** every image gets a unique version, so each `just deploy` or `just up` after the first starts a Consumer canary. `just smoke` may show a rollout in progress until the analysis promotes it.
 
@@ -287,6 +289,7 @@ sum by (event) (count_over_time({app="consumer"} | json [5m]))
 | Alerts go to a webhook that only logs them | Nobody gets paged | PagerDuty or Slack receivers, routed by severity, with runbook links in annotations |
 | Short `for:` durations and fixed thresholds | Could be noisy in production | Tune on real traffic; SLO burn-rate alerts (e.g. on the Job success ratio) |
 | Everything runs single-replica (Prometheus, Loki, Alertmanager, Grafana) | Monitoring goes down with the node | HA pairs, remote storage, or a managed backend (Grafana Cloud, Mimir) |
+| Tight memory limits sized for a laptop | A limit below a process's working set makes the kernel re-read its pages from disk. Grafana 13 needs about 600Mi (220Mi heap + 385Mi of its own binary), and at the original 512Mi limit it re-read about 400 MB/s, stalling Grafana and the whole host. It now has a 1Gi limit with `GOMEMLIMIT=400MiB`, and its unused alerting, plugin preinstall and update checks are off. | Size limits from observed usage (`memory.stat`: anon + mapped files), and alert on `container_memory_working_set_bytes` / limit and on refaults |
 | The monitoring stack runs inside the cluster it watches | A cluster outage also blinds us | An external uptime or "dead man's switch" check (e.g. Watchdog → healthchecks.io) |
 | Grafana uses `admin/admin` and is reachable only by port-forward | Not something to share | SSO and an Ingress |
 | No logs collected from `monitoring` / `kube-system` | The monitoring stack can't be debugged from Loki | Collect them, with a shorter retention |
@@ -301,6 +304,8 @@ sum by (event) (count_over_time({app="consumer"} | json [5m]))
 Producer ──XADD──▶ jobs ─┬──▶ stable  consumer ×3   (track=stable, version A)
                          └──▶ canary  consumer ×1   (track=canary, version B)   ← 25% step
 ```
+
+> **Defaults have changed since this step was recorded:** 2 Consumers at 0.4 Jobs/s, so a canary is one 50% step (1 of 2). Everything below describes the same mechanism with the 4-replica settings used at the time.
 
 > **Since step 5**, the manual pauses below are analysis steps: `just canary` promotes or aborts on its own, and `canary-promote` / `canary-abort` are only overrides.
 
@@ -372,7 +377,8 @@ just rollouts-ui         # Argo Rollouts dashboard on http://localhost:3100
 ## Step 5 — Metric-based automated cutover
 
 ```
-setWeight 25 ──▶ AnalysisRun ──pass──▶ setWeight 50 ──▶ AnalysisRun ──pass──▶ 100% (canary becomes stable)
+setWeight 50 ──▶ AnalysisRun ──pass──▶ 100% (canary becomes stable)
+(when recorded: 25 ──▶ AnalysisRun ──▶ 50 ──▶ AnalysisRun ──▶ 100%)
                      │                                       │
                      ├─fail─────────▶ abort: canary scaled down, stable takes all Jobs, RolloutAborted
                      └─inconclusive─▶ pause for a human (RolloutPaused after 2m)
@@ -385,9 +391,11 @@ The manual pauses from step 4 are replaced by **analysis steps** (`k8s/analysis.
 
 | Metric | Pass | Fail | Otherwise |
 |---|---|---|---|
-| `canary-sample-size`: canary Jobs processed (1m) | ≥ 8 | never | inconclusive: not enough signal yet |
+| `canary-sample-size`: canary Jobs processed (1m) | ≥ 5 | never | inconclusive: not enough signal yet |
 | `canary-failure-ratio-vs-stable`: canary ratio − stable ratio, counted only once the canary has ≥ 3 failures | ≤ 5pp | > 5pp (one failed measurement aborts) | — |
 | `canary-provisioning-p95` (Jobs that reached ready) | ≤ 7.5s | > 9.5s | inconclusive (7.5–9.5s or no data) |
+
+`canary-sample-size` was lowered from 8 to 5 when the defaults dropped to 2 Consumers at 0.4 Jobs/s: a canary at 50% sees about 12 Jobs/min once the old Pods are gone, but only about 8/min while they drain, which made a healthy release inconclusive.
 
 Why these choices:
 - **Relative to stable:** platform-wide failures (like step 3's quota 403s) don't roll back a healthy canary.
